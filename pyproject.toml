@@ -13,3 +13,9 @@ dependencies = [
     "requests>=2.32.5",
     "rich>=14.3.3",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+coding-agent = "coding_agent.main:main"
