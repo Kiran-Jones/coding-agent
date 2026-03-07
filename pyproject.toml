@@ -9,9 +9,11 @@ dependencies = [
     "ddgs>=9.11.2",
     "dotenv>=0.9.9",
     "duckduckgo-search>=8.1.1",
+    "mcp>=1.26.0",
     "prompt-toolkit>=3.0.52",
     "requests>=2.32.5",
     "rich>=14.3.3",
+    "ruff>=0.0.280",
 ]
 
 [tool.setuptools.packages.find]
@@ -19,3 +21,7 @@ where = ["src"]
 
 [project.scripts]
 coding-agent = "coding_agent.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
