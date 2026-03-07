@@ -2,7 +2,6 @@
 
 import os
 import re
-import shutil
 import sys
 import threading
 import time
@@ -12,12 +11,14 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
 from .agent import SYSTEM_PROMPT, CodingAgent
+from .agent_ui import AgentUI
+from .markdown_renderer import render_markdown_with_syntax
 from .session_manager import SessionManager
+from .status_bar import StatusBar
 
 load_dotenv()
 
@@ -429,100 +430,22 @@ def parse_file_mentions(text: str) -> str:
 
 
 def main():
-
-    def print_agent_notification(message: str) -> None:
-        console.print(message)
-
-    # ── Persistent status bar ──────────────────────────────────────────
-    _bar_active = False
-    _bar_status = ""
-    _bar_last_redraw = 0.0
-
-    def _bar_text(extra: str = "") -> str:
-        usage = agent.get_usage()
-        text = f" {agent.model} │ {usage['total_prompt_tokens']:,} in / {usage['total_completion_tokens']:,} out"
-        if extra:
-            text += f" │ {extra}"
-        return text
-
-    def _draw_bar(extra: str = "", throttle: bool = False):
-        nonlocal _bar_last_redraw
-        if not _bar_active:
-            return
-        if throttle:
-            now = time.monotonic()
-            if now - _bar_last_redraw < 0.25:
-                return
-            _bar_last_redraw = now
-        size = shutil.get_terminal_size()
-        text = _bar_text(extra or _bar_status)
-        bar = text.ljust(size.columns)[: size.columns]
-        # Use CSI s/u (separate save slot from DEC SC/RC used by enable/disable)
-        sys.stdout.write(f"\033[s\033[{size.lines};1H\033[7m{bar}\033[0m\033[u")
-        sys.stdout.flush()
-
-    def enable_status_bar():
-        nonlocal _bar_active, _bar_status
-        if _bar_active:
-            return
-        _bar_active = True
-        _bar_status = ""
-        size = shutil.get_terminal_size()
-        # DEC save cursor, set scroll region (excludes bottom line, moves cursor
-        # to home as a side-effect), DEC restore cursor to where it was.
-        sys.stdout.write(f"\0337\033[1;{size.lines - 1}r\0338")
-        sys.stdout.flush()
-        _draw_bar()
-
-    def disable_status_bar():
-        nonlocal _bar_active
-        if not _bar_active:
-            return
-        _bar_active = False
-        size = shutil.get_terminal_size()
-        # DEC save cursor, clear status line, reset scroll region (moves cursor
-        # to home as a side-effect), DEC restore cursor to where it was.
-        sys.stdout.write(f"\0337\033[{size.lines};1H\033[K\033[r\0338")
-        sys.stdout.flush()
-
-    # ── Spinner replacements (now just status bar text) ────────────────
-    def stop_spinner():
-        nonlocal _bar_status
-        _bar_status = ""
-        _draw_bar()
-
-    def start_spinner():
-        nonlocal _bar_status
-        _bar_status = "Thinking…"
-        _draw_bar()
-
-    def print_stream_chunk(chunk: str) -> None:
-        nonlocal _bar_status
-        if _bar_status == "Thinking…":
-            _bar_status = ""
-        sys.stdout.write(chunk)
-        sys.stdout.flush()
-        _draw_bar(throttle=True)
-
-    def approve_tool(func_name: str, arguments: dict) -> bool:
-        nonlocal _bar_status
-        _bar_status = ""
-        _draw_bar()
-        arg_summary = ", ".join(f"{k}={str(v)[:80]}" for k, v in arguments.items())
-        console.print(f"\n [bold yellow]{func_name}[/bold yellow]({arg_summary})")
-        try:
-            answer = PromptSession().prompt("   Allow? (y/n) > ").strip().lower()
-            return answer in ("y", "yes", "")
-        except (KeyboardInterrupt, EOFError):
-            return False
-
+    # Initialize agent first (needed by StatusBar)
     agent = CodingAgent(
         api_key=API_KEY,
         endpoint_url=ENDPOINT_URL,
-        ui_callback=print_agent_notification,
-        stream_callback=print_stream_chunk,
-        approval_callback=approve_tool,
+        ui_callback=lambda msg: console.print(msg),
+        stream_callback=None,  # Will be set after AgentUI is created
+        approval_callback=None,  # Will be set after AgentUI is created
     )
+
+    # Create UI components
+    status_bar = StatusBar(agent)
+    agent_ui = AgentUI(console, agent, status_bar)
+
+    # Wire up callbacks
+    agent.stream_callback = agent_ui.stream_chunk
+    agent.approval_callback = agent_ui.approve_tool
     manager = SessionManager()
     session = create_prompt_session(agent)
     threading.Thread(target=session.completer.fetch_models, daemon=True).start()
@@ -578,14 +501,14 @@ def main():
                     agent.messages, current_session_title, agent.full_history
                 )
 
-            enable_status_bar()
+            status_bar.enable()
             plan_text = agent.run_plan_loop(
-                stream_callback=print_stream_chunk,
-                spinner_start=start_spinner,
-                spinner_stop=stop_spinner,
+                stream_callback=agent_ui.stream_chunk,
+                spinner_start=agent_ui.start_thinking,
+                spinner_stop=agent_ui.stop_thinking,
             )
-            stop_spinner()
-            disable_status_bar()
+            agent_ui.stop_thinking()
+            status_bar.disable()
 
             if not plan_text:
                 console.print(
@@ -594,7 +517,11 @@ def main():
                 continue
 
             console.print(
-                Panel(Markdown(plan_text), title="Proposed Plan", border_style="cyan")
+                Panel(
+                    render_markdown_with_syntax(plan_text),
+                    title="Proposed Plan",
+                    border_style="cyan",
+                )
             )
             answer = (
                 session.prompt(
@@ -611,18 +538,18 @@ def main():
                 agent.add_user_task(
                     f"Revise your plan based on this feedback: {feedback}"
                 )
-                enable_status_bar()
+                status_bar.enable()
                 plan_text = agent.run_plan_loop(
-                    stream_callback=print_stream_chunk,
-                    spinner_start=start_spinner,
-                    spinner_stop=stop_spinner,
+                    stream_callback=agent_ui.stream_chunk,
+                    spinner_start=agent_ui.start_thinking,
+                    spinner_stop=agent_ui.stop_thinking,
                 )
-                stop_spinner()
-                disable_status_bar()
+                agent_ui.stop_thinking()
+                status_bar.disable()
                 if plan_text:
                     console.print(
                         Panel(
-                            Markdown(plan_text),
+                            render_markdown_with_syntax(plan_text),
                             title="Revised Plan",
                             border_style="cyan",
                         )
@@ -668,12 +595,12 @@ def main():
         done = False
         step = 1
         max_steps = 35
-        enable_status_bar()
+        status_bar.enable()
 
         try:
             while not done:
                 if step > max_steps:
-                    disable_status_bar()
+                    status_bar.disable()
                     console.print(
                         f"\n[bold yellow]Agent reached the maximum of {max_steps} steps.[/bold yellow]"
                     )
@@ -688,24 +615,29 @@ def main():
 
                     if keep_going == "y":
                         max_steps += 10
-                        enable_status_bar()
+                        status_bar.enable()
                     else:
-                        enable_status_bar()
+                        status_bar.enable()
                         # Force the agent to summarize what it did instead of just cutting off
-                        start_spinner()
+                        agent_ui.start_thinking()
                         result, msg = agent.run_step(force_text=True)
-                        stop_spinner()
-                        disable_status_bar()
+                        agent_ui.stop_thinking()
+                        status_bar.disable()
                         if result not in ("tool_used", "error"):
                             console.print("\n[bold green]Agent Summary:[/bold green]")
-                            console.print(Panel(Markdown(result), border_style="green"))
+                            console.print(
+                                Panel(
+                                    render_markdown_with_syntax(result),
+                                    border_style="green",
+                                )
+                            )
                         break
 
                 # On the last allowed step, force a text response so the agent wraps up
                 force_text = step == max_steps
-                start_spinner()
+                agent_ui.start_thinking()
                 result, msg = agent.run_step(force_text=force_text)
-                stop_spinner()
+                agent_ui.stop_thinking()
 
                 if result == "error":
                     break
@@ -726,11 +658,13 @@ def main():
                             console.print(" [bold]┃[/bold]")
                         else:
                             result_style = "red" if is_error else "green"
-                            console.print(f" [bold]{tc['name']}[/bold] [{result_style}]{tc['result']}[/{result_style}]")
+                            console.print(
+                                f" [bold]{tc['name']}[/bold] [{result_style}]{tc['result']}[/{result_style}]"
+                            )
                 else:
                     sys.stdout.write("\n")
                     # console.print("\n[bold green]Agent Finished Task:[/bold green]")
-                    # console.print(Panel(Markdown(result), border_style="green"))
+                    # console.print(Panel(render_markdown_with_syntax(result), border_style="green"))
                     done = True
 
                 step += 1
@@ -739,7 +673,7 @@ def main():
             console.print("\n[bold yellow]Task cancelled.[/bold yellow]")
 
         finally:
-            disable_status_bar()
+            status_bar.disable()
             manager.save_session(
                 current_session_id,
                 current_session_title,
