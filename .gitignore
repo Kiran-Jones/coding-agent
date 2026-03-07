@@ -19,5 +19,8 @@ output/
 # saved sessions directory
 .sessions/
 
+# saved snapshots directory
+.snapshots/
+
 # MCP config (user-specific)
 mcp_config.json
