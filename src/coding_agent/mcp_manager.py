@@ -8,8 +8,7 @@ from mcp.client.stdio import stdio_client
 
 
 GLOBAL_CONFIG = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
-    "coding-agent",
+    os.path.expanduser("~/.coding-agent"),
     "mcp_config.json",
 )
 PROJECT_CONFIG = os.path.join(os.getcwd(), "mcp_config.json")

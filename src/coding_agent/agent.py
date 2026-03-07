@@ -33,6 +33,18 @@ class CodingAgent:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 
+        # Load AGENT.md context: system-level first, then project-level
+        agent_md_paths = [
+            (os.path.expanduser("~/.coding-agent/AGENT.md"), "User"),
+            (os.path.join(os.getcwd(), "AGENT.md"), "Project"),
+        ]
+        for path, label in agent_md_paths:
+            if os.path.exists(path):
+                with open(path) as f:
+                    context = f.read().strip()
+                if context:
+                    self.messages[0]["content"] += f"\n\n## {label} Context (AGENT.md)\n{context}"
+
         self.mcp_manager = None
         try:
             from .mcp_manager import GLOBAL_CONFIG, PROJECT_CONFIG, MCPManager
@@ -154,7 +166,19 @@ class CodingAgent:
         summaries = []
         for tool_call in tool_calls:
             func_name = tool_call["function"]["name"]
-            arguments = json.loads(tool_call["function"]["arguments"])
+            try:
+                arguments = json.loads(tool_call["function"]["arguments"])
+            except (json.JSONDecodeError, TypeError) as e:
+                error_msg = f"Error: Malformed tool arguments: {e}"
+                tool_msg = {
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": error_msg,
+                }
+                self.messages.append(tool_msg)
+                self.full_history.append(tool_msg)
+                summaries.append({"name": func_name, "args": {}, "result": error_msg})
+                continue
 
             if self._requires_approval(func_name, arguments):
                 if not self._get_user_approval(func_name, arguments):
@@ -183,8 +207,10 @@ class CodingAgent:
                 filtered_args = {
                     k: v for k, v in arguments.items() if k in valid_params
                 }
+                if func_name == "run_terminal_command":
+                    filtered_args["output_callback"] = self.stream_callback
                 result = str(func_to_call(**filtered_args))
-                display_args = filtered_args
+                display_args = {k: v for k, v in filtered_args.items() if k != "output_callback"}
             else:
                 result = f"Error: Unknown tool '{func_name}'"
                 display_args = arguments
@@ -292,7 +318,7 @@ class CodingAgent:
         if "__" in func_name:
             return True
         # Terminal commands and file writes need approval
-        if func_name in ("run_terminal_command", "write_file"):
+        if func_name in ("run_terminal_command", "write_file", "replace_text_in_file", "run_git_command"):
             return True
         return False
 

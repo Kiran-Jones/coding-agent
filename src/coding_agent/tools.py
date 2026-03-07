@@ -7,6 +7,8 @@ import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 
+COMMAND_TIMEOUT = 120
+
 
 def map_python_type_to_json(py_type):
     """Converts Python type hints to JSON schema types."""
@@ -29,13 +31,15 @@ def generate_schema(func):
     properties = {}
     required = []
     
-    # Loop through the function's arguments
+    # Loop through the function's arguments (skip internal-only params like callbacks)
     for name, param in sig.parameters.items():
+        if name.endswith("_callback"):
+            continue
         # Map the Python type hint (e.g., str) to JSON type (e.g., "string")
         param_type = map_python_type_to_json(param.annotation)
-        
+
         properties[name] = {"type": param_type, "description": f"The {name} parameter."}
-        
+
         # If the argument doesn't have a default value, it's required
         if param.default == inspect.Parameter.empty:
             required.append(name)
@@ -55,41 +59,27 @@ def generate_schema(func):
     }
 
 
-def run_terminal_command(command: str) -> str:
+def run_terminal_command(command: str, output_callback=None) -> str:
     """Run a terminal command and return its output. Only accepts a single 'command' argument (the shell command string)."""
-    
-    import re
-    
-    DANGEROUS_PATTERNS = [
-        r"\brm\b",
-        r"\bsudo\b",
-        r"\bdd\b",
-        r"\bmkfs\b",
-        r"\bshutdown\b",
-        r"\breboot\b",
-        r"\bpoweroff\b",
-    ]
-    
-    if any(re.search(p, command) for p in DANGEROUS_PATTERNS):
-        confirmation = input(
-            f"The command '{command}' contains potentially dangerous keywords. Are you sure you want to run it? (Y/n): "
-        )
-        if confirmation.lower() != "y":
-            return "Command execution cancelled by user."
-    
+
     try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=15
+        process = subprocess.Popen(
+            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
-        if result.returncode == 0:
-            return (
-                result.stdout.strip()
-                or "Command executed successfully with no output."
-            )
+        output_lines = []
+        for line in process.stdout:
+            output_lines.append(line)
+            if output_callback:
+                output_callback(line)
+        process.wait(timeout=COMMAND_TIMEOUT)
+        stderr = process.stderr.read()
+        if process.returncode == 0:
+            return "".join(output_lines).strip() or "Command executed successfully with no output."
         else:
-            return f"Error: {result.stderr.strip()}"
+            return f"Error: {stderr.strip()}"
     except subprocess.TimeoutExpired:
-        return "Error: The command timed out after 15 seconds. Do not run interactive commands."
+        process.kill()
+        return f"Error: The command timed out after {COMMAND_TIMEOUT} seconds."
     except Exception as e:
         return f"Execution Exception: {str(e)}"
 
@@ -244,7 +234,7 @@ def run_git_command(command: str) -> str:
     try:
         args = ["git"] + shlex.split(command)
         
-        result = subprocess.run(args, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
         if result.returncode == 0:
             return (
                 result.stdout.strip()
@@ -253,7 +243,7 @@ def run_git_command(command: str) -> str:
         else:
             return f"Error: {result.stderr.strip()}"
     except subprocess.TimeoutExpired:
-        return "Error: The git command timed out after 15 seconds."
+        return f"Error: The git command timed out after {COMMAND_TIMEOUT} seconds."
     except Exception as e:
         return f"Execution Exception: {str(e)}"
 
