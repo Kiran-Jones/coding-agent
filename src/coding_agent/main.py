@@ -7,10 +7,10 @@ import threading
 from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from typing_extensions import final
 
 from .agent import SYSTEM_PROMPT, CodingAgent
 from .session_manager import SessionManager
@@ -224,17 +224,28 @@ def create_prompt_session(agent: CodingAgent) -> PromptSession:
 
 def main():
 
-    def print_agent_notification(message: str):
+    def print_agent_notification(message: str) -> None:
         console.print(message)
+
+    def print_stream_chunk(chunk: str) -> None:
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
 
     agent = CodingAgent(
         api_key=API_KEY,
         endpoint_url=ENDPOINT_URL,
         ui_callback=print_agent_notification,
+        stream_callback=print_stream_chunk,
     )
     manager = SessionManager()
     session = create_prompt_session(agent)
     threading.Thread(target=session.completer.fetch_models, daemon=True).start()
+
+    def get_toolbar():
+        usage = agent.get_usage()
+        return HTML(
+            f" <b>{agent.model}</b> │ {usage['total_prompt_tokens']:,} in / {usage['total_completion_tokens']:,} out"
+        )
 
     current_session_id = None
     current_session_title = "New Chat"
@@ -244,7 +255,7 @@ def main():
 
     while True:
         try:
-            user_input = session.prompt("\n> ").strip()
+            user_input = session.prompt("\n> ", bottom_toolbar=get_toolbar).strip()
         except (KeyboardInterrupt, EOFError):
             if current_session_id:
                 manager.save_session(
@@ -282,7 +293,8 @@ def main():
                     )
                     keep_going = (
                         session.prompt(
-                            "Do you want to give it 10 more steps to finish? (y/n): "
+                            "Do you want to give it 10 more steps to finish? (y/n): ",
+                            bottom_toolbar=get_toolbar,
                         )
                         .strip()
                         .lower()
@@ -324,8 +336,9 @@ def main():
                             icon = "[red]✗[/red]" if is_error else "[green]✓[/green]"
                             console.print(f" {icon} [bold]{tc['name']}[/bold]")
                 else:
-                    console.print("\n[bold green]Agent Finished Task:[/bold green]")
-                    console.print(Panel(Markdown(result), border_style="green"))
+                    sys.stdout.write("\n")
+                    # console.print("\n[bold green]Agent Finished Task:[/bold green]")
+                    # console.print(Panel(Markdown(result), border_style="green"))
                     done = True
 
                 step += 1

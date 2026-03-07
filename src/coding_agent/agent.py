@@ -11,11 +11,12 @@ SYSTEM_PROMPT = "You are a coding agent. You have tools to write files and run t
 
 
 class CodingAgent:
-    def __init__(self, api_key, endpoint_url, ui_callback=None):
+    def __init__(self, api_key, endpoint_url, ui_callback=None, stream_callback=None):
         self.api_key = api_key
         self.endpoint_url = endpoint_url
 
         self.ui_callback = ui_callback if ui_callback else lambda msg: None
+        self.stream_callback = stream_callback if stream_callback else lambda msg: None
 
         self.model = os.getenv("MODEL_NAME", "qwen.qwen3-vl-32b-instruct-fp8")
         self.title_model = os.getenv("TITLE_MODEL", self.model)
@@ -36,7 +37,7 @@ class CodingAgent:
         self.messages.append(msg)
         self.full_history.append(msg)
 
-    def run_step(self, force_text=False, stream=True) -> tuple[str, dict | None]:
+    def run_step(self, force_text=False) -> tuple[str, dict | None]:
         self.messages, did_compact = smart_compact(
             self.messages, self.api_key, self.endpoint_url, self.summary_model
         )
@@ -51,6 +52,8 @@ class CodingAgent:
             "messages": self.messages,
             "tools": TOOL_SCHEMAS,
             "tool_choice": "none" if force_text else "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
 
         response = requests.post(
@@ -60,6 +63,7 @@ class CodingAgent:
                 "Content-Type": "application/json",
             },
             json=payload,
+            stream=True,
         )
 
         if response.status_code != 200:
@@ -67,18 +71,12 @@ class CodingAgent:
             self.ui_callback(f"[bold red]{error_msg}[/bold red]")
             return "error", None
 
-        data = response.json()
-        message = data["choices"][0]["message"]
-        usage = data.get("usage", {})
+        message, usage = self._parse_stream(response)
 
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         self.total_prompt_tokens += prompt_tokens
         self.total_completion_tokens += completion_tokens
-
-        self.ui_callback(
-            f"[dim]Tokens: {prompt_tokens} in / {completion_tokens} out[/dim]"
-        )
 
         self.messages.append(message)
         self.full_history.append(message)
@@ -88,6 +86,62 @@ class CodingAgent:
             return "tool_used", summaries
 
         return message.get("content", ""), None
+
+    def _parse_stream(self, response: requests.Response) -> tuple[dict, dict]:
+        content_parts = []
+        tool_calls_by_index = {}
+        role = "assistant"
+        usage = {}
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+
+            data_str = line[6:]
+
+            if data_str.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+
+            if "usage" in chunk:
+                usage = chunk["usage"]
+
+            choice = chunk["choices"][0] if chunk.get("choices") else None
+            if not choice:
+                continue
+
+            delta = choice.get("delta", {})
+
+            if "content" in delta and delta["content"]:
+                content_parts.append(delta["content"])
+                self.stream_callback(delta["content"])
+
+            if "tool_calls" in delta:
+                for tc_delta in delta["tool_calls"]:
+                    index = tc_delta.get("index", 0)
+                    if index not in tool_calls_by_index:
+                        tool_calls_by_index[index] = {
+                            "id": tc_delta.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": tc_delta.get("function", {}).get("name", ""),
+                                "arguments": "",
+                            },
+                        }
+
+                    arg_chunk = tc_delta.get("function", {}).get("arguments", "")
+                    if arg_chunk:
+                        tool_calls_by_index[index]["function"]["arguments"] += arg_chunk
+        message = {"role": role, "content": "".join(content_parts) or None}
+        if tool_calls_by_index:
+            message["tool_calls"] = [
+                tool_calls_by_index[i] for i in sorted(tool_calls_by_index)
+            ]
+
+        return message, usage
 
     def _handle_tool_calls(self, tool_calls: list) -> list[dict]:
         summaries = []
