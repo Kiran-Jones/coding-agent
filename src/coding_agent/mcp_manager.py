@@ -3,6 +3,8 @@ import json
 import os
 import re
 
+from typing import Any
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -20,8 +22,8 @@ class MCPManager:
         self._config: dict = {}
         self._loop = asyncio.new_event_loop()
         self._sessions: dict[str, ClientSession] = {}
-        self._stdio_contexts: dict[str, object] = {}
-        self._session_contexts: dict[str, object] = {}
+        self._stdio_contexts: dict[str, Any] = {}
+        self._session_contexts: dict[str, Any] = {}
         self._initialized = False
 
     def initialize(self) -> None:

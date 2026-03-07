@@ -64,10 +64,7 @@ def render_markdown_with_syntax(content: str) -> Group:
         A Rich Group containing all rendered elements
     """
     # Pattern to match code blocks: ```language\ncode\n```
-    code_block_pattern = re.compile(
-        r'```(\w+)?\n(.*?)```',
-        re.DOTALL
-    )
+    code_block_pattern = re.compile(r"```(\w+)?\n(.*?)```", re.DOTALL)
 
     elements = []
     last_end = 0
@@ -75,13 +72,13 @@ def render_markdown_with_syntax(content: str) -> Group:
     for match in code_block_pattern.finditer(content):
         # Add any markdown content before this code block
         if match.start() > last_end:
-            markdown_text = content[last_end:match.start()].strip()
+            markdown_text = content[last_end : match.start()].strip()
             if markdown_text:
                 elements.append(Markdown(markdown_text))
 
         # Extract language and code
         language = match.group(1) or "text"
-        code = match.group(2).rstrip('\n')
+        code = match.group(2).rstrip("\n")
 
         # Create syntax-highlighted code block
         try:
@@ -91,7 +88,7 @@ def render_markdown_with_syntax(content: str) -> Group:
                 theme="monokai",
                 line_numbers=True,
                 word_wrap=False,
-                background_color="default"
+                background_color="default",
             )
             elements.append(syntax)
         except Exception:

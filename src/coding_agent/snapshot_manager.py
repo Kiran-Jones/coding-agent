@@ -1,8 +1,12 @@
 import json
 import os
+from typing import Any
 
 
 class SnapshotManager:
+    index: dict[str, Any]
+    snapshot_id: int
+
     def __init__(self):
         self.snapshot_dir = os.path.join(os.getcwd(), ".snapshots")
         os.makedirs(self.snapshot_dir, exist_ok=True)
@@ -14,7 +18,7 @@ class SnapshotManager:
 
         self._load_index()
 
-        self.snapshot_id = self.index.get("next_id", 0)
+        self.snapshot_id: int = self.index.get("next_id", 0)
 
     def save_snapshot(self, snapshot: dict):
         filepath = os.path.join(self.snapshot_dir, f"{self.snapshot_id}.json")
@@ -49,7 +53,14 @@ class SnapshotManager:
 
         redo_filepath = os.path.join(self.snapshot_dir, f"{self.snapshot_id}.json")
         with open(redo_filepath, "w") as f:
-            json.dump({"file_path": file_path, "original": current_content, "timestamp": snapshot["timestamp"]}, f)
+            json.dump(
+                {
+                    "file_path": file_path,
+                    "original": current_content,
+                    "timestamp": snapshot["timestamp"],
+                },
+                f,
+            )
         self.index["redo_stack"].append(self.snapshot_id)
         self.snapshot_id += 1
         self.index["next_id"] = self.snapshot_id
@@ -86,7 +97,14 @@ class SnapshotManager:
 
         undo_filepath = os.path.join(self.snapshot_dir, f"{self.snapshot_id}.json")
         with open(undo_filepath, "w") as f:
-            json.dump({"file_path": file_path, "original": current_content, "timestamp": snapshot["timestamp"]}, f)
+            json.dump(
+                {
+                    "file_path": file_path,
+                    "original": current_content,
+                    "timestamp": snapshot["timestamp"],
+                },
+                f,
+            )
         self.index["undo_stack"].append(self.snapshot_id)
         self.snapshot_id += 1
         self.index["next_id"] = self.snapshot_id
@@ -111,12 +129,14 @@ class SnapshotManager:
                 with open(filepath, "r") as f:
                     snapshot = json.load(f)
                 action = "created" if snapshot.get("original") is None else "modified"
-                history.append({
-                    "id": sid,
-                    "file_path": snapshot["file_path"],
-                    "action": action,
-                    "timestamp": snapshot.get("timestamp", 0),
-                })
+                history.append(
+                    {
+                        "id": sid,
+                        "file_path": snapshot["file_path"],
+                        "action": action,
+                        "timestamp": snapshot.get("timestamp", 0),
+                    }
+                )
         return history
 
     def _load_index(self):

@@ -81,7 +81,7 @@ class CodingAgent:
         except Exception as e:
             self.ui_callback(f"[bold red]Failed to initialize MCP: {e}[/bold red]")
 
-    def run_step(self, force_text=False) -> tuple[str, dict | None]:
+    def run_step(self, force_text=False) -> tuple[str, list[dict] | None]:
         self.messages, did_compact = smart_compact(
             self.messages, self.api_key, self.endpoint_url, self.summary_model
         )
@@ -330,11 +330,11 @@ class CodingAgent:
 
                 if result == "error":
                     break
-                elif result == "tool_used":
+                elif result == "tool_used" and msg is not None:
                     # Tool results are already in messages; continue planning
                     if stream_callback:
                         for tc in msg:
-                            is_error = tc["result"].startswith("Error")
+                            _is_error = tc["result"].startswith("Error")
                             stream_callback(f"\n{tc['name']}\n")
                     continue
                 else:

@@ -448,7 +448,7 @@ def main():
     agent.approval_callback = agent_ui.approve_tool
     manager = SessionManager()
     session = create_prompt_session(agent)
-    threading.Thread(target=session.completer.fetch_models, daemon=True).start()
+    threading.Thread(target=session.completer.fetch_models, daemon=True).start()  # type: ignore[union-attr]
 
     def get_toolbar():
         usage = agent.get_usage()
@@ -641,7 +641,7 @@ def main():
 
                 if result == "error":
                     break
-                elif result == "tool_used":
+                elif result == "tool_used" and msg is not None:
                     for tc in msg:
                         is_error = tc["result"].startswith("Error")
                         if verbose_mode:

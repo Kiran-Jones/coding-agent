@@ -18,6 +18,7 @@ from coding_agent.agent import CodingAgent, SYSTEM_PROMPT
 # SECTION 2.1: Initialization (5 tests)
 # ============================================================================
 
+
 class TestCodingAgentInitialization:
     """Test CodingAgent initialization."""
 
@@ -25,12 +26,11 @@ class TestCodingAgentInitialization:
         """Verify __init__ with API key, endpoint."""
         # Mock MCP initialization
         mocker.patch("coding_agent.mcp_manager.MCPManager", side_effect=ImportError)
-        
+
         agent = CodingAgent(
-            api_key="test-key",
-            endpoint_url="http://test.com/v1/chat/completions"
+            api_key="test-key", endpoint_url="http://test.com/v1/chat/completions"
         )
-        
+
         assert agent.api_key == "test-key"
         assert agent.endpoint_url == "http://test.com/v1/chat/completions"
         assert len(agent.messages) > 0
@@ -39,11 +39,11 @@ class TestCodingAgentInitialization:
     def test_coding_agent_init_with_callbacks(self, mocker):
         """Verify callback assignment."""
         mocker.patch("coding_agent.mcp_manager.MCPManager", side_effect=ImportError)
-        
+
         ui_callback = Mock()
         stream_callback = Mock()
         approval_callback = Mock()
-        
+
         agent = CodingAgent(
             api_key="test-key",
             endpoint_url="http://test.com/v1/chat/completions",
@@ -51,7 +51,7 @@ class TestCodingAgentInitialization:
             stream_callback=stream_callback,
             approval_callback=approval_callback,
         )
-        
+
         assert agent.ui_callback == ui_callback
         assert agent.stream_callback == stream_callback
         assert agent.approval_callback == approval_callback
@@ -59,14 +59,14 @@ class TestCodingAgentInitialization:
     def test_coding_agent_init_default_callbacks(self, mocker):
         """Verify default callbacks are set."""
         mocker.patch("coding_agent.mcp_manager.MCPManager", side_effect=ImportError)
-        
+
         agent = CodingAgent(
             api_key="test-key",
             endpoint_url="http://test.com/v1/chat/completions",
             ui_callback=None,
             stream_callback=None,
         )
-        
+
         # Default callbacks should be lambda functions that do nothing
         agent.ui_callback("test")
         agent.stream_callback("test")
@@ -75,14 +75,16 @@ class TestCodingAgentInitialization:
         """MCP init failure doesn't crash."""
         mocker.patch(
             "coding_agent.mcp_manager.MCPManager",
-            side_effect=Exception("MCP Connection failed")
+            side_effect=Exception("MCP Connection failed"),
         )
         # Make os.path.exists return True only for mcp config paths
         original_exists = os.path.exists
+
         def patched_exists(path):
             if "mcp_config" in str(path):
                 return True
             return original_exists(path)
+
         mocker.patch("os.path.exists", side_effect=patched_exists)
 
         agent = CodingAgent(
@@ -98,13 +100,14 @@ class TestCodingAgentInitialization:
 # SECTION 2.2: API Communication & Streaming (6 tests)
 # ============================================================================
 
+
 class TestParseStream:
     """Test stream parsing."""
 
     def test_parse_stream_simple_text(self, mock_agent, mock_stream_response):
         """Parse single text chunk."""
         message, usage = mock_agent._parse_stream(mock_stream_response)
-        
+
         assert message["role"] == "assistant"
         assert "Hello world" in message["content"]
         assert usage.get("prompt_tokens") == 10
@@ -113,7 +116,7 @@ class TestParseStream:
     def test_parse_stream_tool_calls(self, mock_agent, mock_tool_call_response):
         """Parse tool_calls with arguments."""
         message, usage = mock_agent._parse_stream(mock_tool_call_response)
-        
+
         assert "tool_calls" in message
         assert len(message["tool_calls"]) > 0
         tc = message["tool_calls"][0]
@@ -135,7 +138,7 @@ class TestParseStream:
         ]
 
         message, usage = mock_agent._parse_stream(mock_response)
-        
+
         assert message["content"] == "Starting..."
         assert "tool_calls" in message
 
@@ -144,13 +147,13 @@ class TestParseStream:
         mock_response = Mock()
         mock_response.iter_lines.return_value = [
             'data: {"choices":[{"delta":{"content":"test"}}]}\n',
-            'data: {malformed json}\n',  # Invalid JSON
+            "data: {malformed json}\n",  # Invalid JSON
             "data: [DONE]\n",
         ]
-        
+
         agent = CodingAgent(api_key="test", endpoint_url="http://test.com")
         message, usage = agent._parse_stream(mock_response)
-        
+
         assert message["content"] == "test"
 
     def test_parse_stream_usage_tokens(self, mocker):
@@ -161,10 +164,10 @@ class TestParseStream:
             'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":42,"completion_tokens":17}}\n',
             "data: [DONE]\n",
         ]
-        
+
         agent = CodingAgent(api_key="test", endpoint_url="http://test.com")
         message, usage = agent._parse_stream(mock_response)
-        
+
         assert usage["prompt_tokens"] == 42
         assert usage["completion_tokens"] == 17
 
@@ -174,15 +177,16 @@ class TestParseStream:
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
         mocker.patch("requests.post", return_value=mock_response)
-        
+
         result, msg = mock_agent.run_step()
-        
+
         assert result == "error"
 
 
 # ============================================================================
 # SECTION 2.3: Tool Call Handling (8 tests)
 # ============================================================================
+
 
 class TestHandleToolCalls:
     """Test tool call handling."""
@@ -195,12 +199,12 @@ class TestHandleToolCalls:
                 "function": {
                     "name": "write_file",
                     "arguments": "{invalid json}",
-                }
+                },
             }
         ]
-        
+
         summaries = mock_agent._handle_tool_calls(tool_calls)
-        
+
         assert len(summaries) == 1
         assert "Error" in summaries[0]["result"]
         assert "Malformed" in summaries[0]["result"]
@@ -214,12 +218,12 @@ class TestHandleToolCalls:
                 "function": {
                     "name": "write_file",
                     "arguments": '{"file_path": "test.txt", "content": "test"}',
-                }
+                },
             }
         ]
-        
+
         summaries = mock_agent._handle_tool_calls(tool_calls)
-        
+
         assert "not available in planning mode" in summaries[0]["result"]
 
     def test_handle_tool_calls_plan_mode_allows_readonly(self, mock_agent):
@@ -232,18 +236,22 @@ class TestHandleToolCalls:
                 "function": {
                     "name": "read_file",
                     "arguments": '{"file_path": "test.txt"}',
-                }
+                },
             }
         ]
-        
-        with patch.dict("coding_agent.tools.AVAILABLE_TOOLS",
-                       {"read_file": lambda file_path, **kwargs: "content"}):
+
+        with patch.dict(
+            "coding_agent.tools.AVAILABLE_TOOLS",
+            {"read_file": lambda file_path, **kwargs: "content"},
+        ):
             summaries = mock_agent._handle_tool_calls(tool_calls)
 
         # Should execute without error
         assert len(summaries) == 1
 
-    def test_handle_tool_calls_approval_required(self, mock_agent, mock_approval_callback):
+    def test_handle_tool_calls_approval_required(
+        self, mock_agent, mock_approval_callback
+    ):
         """Test approval_callback workflow."""
         mock_agent.approval_callback = mock_approval_callback
         tool_calls = [
@@ -252,12 +260,14 @@ class TestHandleToolCalls:
                 "function": {
                     "name": "write_file",
                     "arguments": '{"file_path": "test.txt", "content": "test"}',
-                }
+                },
             }
         ]
-        
-        with patch.dict("coding_agent.tools.AVAILABLE_TOOLS",
-                       {"write_file": lambda file_path, content, **kwargs: "Success"}):
+
+        with patch.dict(
+            "coding_agent.tools.AVAILABLE_TOOLS",
+            {"write_file": lambda file_path, content, **kwargs: "Success"},
+        ):
             mock_agent._handle_tool_calls(tool_calls)
 
         # Verify callback was called
@@ -273,12 +283,12 @@ class TestHandleToolCalls:
                 "function": {
                     "name": "write_file",
                     "arguments": '{"file_path": "test.txt", "content": "test"}',
-                }
+                },
             }
         ]
-        
+
         summaries = mock_agent._handle_tool_calls(tool_calls)
-        
+
         assert "denied" in summaries[0]["result"].lower()
 
     def test_handle_tool_calls_mcp_tool(self, mock_agent, mocker):
@@ -286,33 +296,35 @@ class TestHandleToolCalls:
         mock_mcp = Mock()
         mock_mcp.call_tool.return_value = "MCP result"
         mock_agent.mcp_manager = mock_mcp
-        
+
         tool_calls = [
             {
                 "id": "call-1",
                 "function": {
                     "name": "server__tool",
                     "arguments": '{"param": "value"}',
-                }
+                },
             }
         ]
-        
+
         summaries = mock_agent._handle_tool_calls(tool_calls)
-        
+
         mock_mcp.call_tool.assert_called_once()
         assert "MCP result" in summaries[0]["result"]
 
     def test_handle_tool_calls_built_in_tool(self, mock_agent):
         """Execute AVAILABLE_TOOLS function."""
-        with patch.dict("coding_agent.tools.AVAILABLE_TOOLS",
-                       {"read_file": lambda file_path, **kwargs: "file content"}):
+        with patch.dict(
+            "coding_agent.tools.AVAILABLE_TOOLS",
+            {"read_file": lambda file_path, **kwargs: "file content"},
+        ):
             tool_calls = [
                 {
                     "id": "call-1",
                     "function": {
                         "name": "read_file",
                         "arguments": '{"file_path": "test.txt"}',
-                    }
+                    },
                 }
             ]
 
@@ -327,19 +339,20 @@ class TestHandleToolCalls:
                 "id": "call-1",
                 "function": {
                     "name": "nonexistent_tool",
-                    "arguments": '{}',
-                }
+                    "arguments": "{}",
+                },
             }
         ]
-        
+
         summaries = mock_agent._handle_tool_calls(tool_calls)
-        
+
         assert "Unknown tool" in summaries[0]["result"]
 
 
 # ============================================================================
 # SECTION 2.4: Snapshot Integration (3 tests)
 # ============================================================================
+
 
 class TestSnapshotIntegration:
     """Test snapshot manager integration."""
@@ -348,44 +361,42 @@ class TestSnapshotIntegration:
         """Verify snapshot_manager.save_snapshot called."""
         test_file = tmp_path / "test.txt"
         test_file.write_text("original content")
-        
+
         tool_calls = [
             {
                 "id": "call-1",
                 "function": {
                     "name": "write_file",
-                    "arguments": json.dumps({
-                        "file_path": str(test_file),
-                        "content": "new content"
-                    }),
-                }
+                    "arguments": json.dumps(
+                        {"file_path": str(test_file), "content": "new content"}
+                    ),
+                },
             }
         ]
-        
+
         mock_agent._handle_tool_calls(tool_calls)
-        
+
         # Verify snapshot was saved
         mock_agent.snapshot_manager.save_snapshot.assert_called()
 
     def test_handle_tool_calls_snapshot_new_file(self, mock_agent, tmp_path):
         """Save None for new files."""
         new_file = tmp_path / "new.txt"
-        
+
         tool_calls = [
             {
                 "id": "call-1",
                 "function": {
                     "name": "write_file",
-                    "arguments": json.dumps({
-                        "file_path": str(new_file),
-                        "content": "content"
-                    }),
-                }
+                    "arguments": json.dumps(
+                        {"file_path": str(new_file), "content": "content"}
+                    ),
+                },
             }
         ]
-        
+
         mock_agent._handle_tool_calls(tool_calls)
-        
+
         # Verify snapshot was saved with None original
         call_args = mock_agent.snapshot_manager.save_snapshot.call_args
         snapshot = call_args[0][0]
@@ -396,6 +407,7 @@ class TestSnapshotIntegration:
 # SECTION 2.5: Token Management (2 tests)
 # ============================================================================
 
+
 class TestTokenManagement:
     """Test token counting and management."""
 
@@ -403,9 +415,9 @@ class TestTokenManagement:
         """Verify usage dict structure."""
         mock_agent.total_prompt_tokens = 100
         mock_agent.total_completion_tokens = 50
-        
+
         usage = mock_agent.get_usage()
-        
+
         assert usage["total_prompt_tokens"] == 100
         assert usage["total_completion_tokens"] == 50
         assert usage["total_tokens"] == 150
@@ -414,9 +426,9 @@ class TestTokenManagement:
         """Verify reset() clears counters."""
         mock_agent.total_prompt_tokens = 100
         mock_agent.total_completion_tokens = 50
-        
+
         mock_agent.reset()
-        
+
         # Note: reset() doesn't clear token counters (by design)
         # but does reset messages
         assert len(mock_agent.messages) == 1
@@ -427,15 +439,16 @@ class TestTokenManagement:
 # SECTION 2.6: Message Management (4 tests)
 # ============================================================================
 
+
 class TestMessageManagement:
     """Test message management."""
 
     def test_add_user_task(self, mock_agent):
         """Append user message to messages and full_history."""
         initial_len = len(mock_agent.messages)
-        
+
         mock_agent.add_user_task("Do something")
-        
+
         assert len(mock_agent.messages) == initial_len + 1
         assert len(mock_agent.full_history) == initial_len + 1
         assert mock_agent.messages[-1]["role"] == "user"
@@ -445,9 +458,9 @@ class TestMessageManagement:
         """Keep system prompt, clear others."""
         mock_agent.add_user_task("Task 1")
         mock_agent.add_user_task("Task 2")
-        
+
         mock_agent.clear_working_context()
-        
+
         assert len(mock_agent.messages) == 1
         assert mock_agent.messages[0]["role"] == "system"
         # full_history should be preserved
@@ -456,9 +469,9 @@ class TestMessageManagement:
     def test_reset(self, mock_agent):
         """Full reset with SYSTEM_PROMPT."""
         mock_agent.add_user_task("Task")
-        
+
         mock_agent.reset()
-        
+
         assert len(mock_agent.messages) == 1
         assert len(mock_agent.full_history) == 1
         assert SYSTEM_PROMPT in mock_agent.messages[0]["content"]
@@ -467,15 +480,16 @@ class TestMessageManagement:
         """Verify full_history preserved after compaction."""
         initial_history_len = len(mock_agent.full_history)
         mock_agent.add_user_task("Task 1")
-        
+
         full_history_len = len(mock_agent.full_history)
-        
+
         assert full_history_len == initial_history_len + 1
 
 
 # ============================================================================
 # SECTION 2.7: List Models & Titles (3 tests)
 # ============================================================================
+
 
 class TestListModelsAndTitles:
     """Test model listing and title generation."""
@@ -492,16 +506,16 @@ class TestListModelsAndTitles:
         }
         mock_response.raise_for_status = Mock()
         mocker.patch("requests.get", return_value=mock_response)
-        
+
         models = mock_agent.list_models()
-        
+
         assert len(models) == 3
         assert "model-1" in models
 
     def test_list_models_api_failure(self, mock_agent, mocker):
         """Handle API error gracefully."""
         mocker.patch("requests.get", side_effect=Exception("Network error"))
-        
+
         with pytest.raises(Exception):
             mock_agent.list_models()
 
@@ -513,9 +527,9 @@ class TestListModelsAndTitles:
             "choices": [{"message": {"content": "Generated Title"}}]
         }
         mocker.patch("requests.post", return_value=mock_response)
-        
+
         title = mock_agent.generate_title("Write a hello world program")
-        
+
         assert title == "Generated Title"
 
 
@@ -523,21 +537,22 @@ class TestListModelsAndTitles:
 # SECTION 2.8: Approval Workflow (4 tests)
 # ============================================================================
 
+
 class TestApprovalWorkflow:
     """Test approval workflow."""
 
     def test_requires_approval_mcp_tools(self, mock_agent):
         """MCP tools with '__' require approval."""
         mock_agent.approval_callback = Mock()
-        
+
         result = mock_agent._requires_approval("server__tool", {})
-        
+
         assert result is True
 
     def test_requires_approval_dangerous_functions(self, mock_agent):
         """Dangerous functions need approval."""
         mock_agent.approval_callback = Mock()
-        
+
         assert mock_agent._requires_approval("run_terminal_command", {}) is True
         assert mock_agent._requires_approval("write_file", {}) is True
         assert mock_agent._requires_approval("replace_text_in_file", {}) is True
@@ -546,15 +561,17 @@ class TestApprovalWorkflow:
     def test_requires_approval_no_callback(self, mock_agent):
         """No approval needed if callback=None."""
         mock_agent.approval_callback = None
-        
+
         result = mock_agent._requires_approval("write_file", {})
-        
+
         assert result is False
 
     def test_get_user_approval_calls_callback(self, mock_agent, mock_approval_callback):
         """Verify callback is invoked."""
         mock_agent.approval_callback = mock_approval_callback
-        
+
         mock_agent._get_user_approval("write_file", {"file_path": "test.txt"})
-        
-        mock_approval_callback.assert_called_once_with("write_file", {"file_path": "test.txt"})
+
+        mock_approval_callback.assert_called_once_with(
+            "write_file", {"file_path": "test.txt"}
+        )

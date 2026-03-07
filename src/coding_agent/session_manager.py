@@ -30,7 +30,9 @@ class SessionManager:
         self.save_session(session_id, title, messages, full_history)
         return session_id
 
-    def save_session(self, session_id: str, title: str, messages: list, full_history: list):
+    def save_session(
+        self, session_id: str, title: str, messages: list, full_history: list
+    ):
         """Save session data to a JSON file.
 
         Args:
