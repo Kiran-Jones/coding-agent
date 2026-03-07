@@ -182,6 +182,8 @@ class CodingAgent:
                 arguments = json.loads(tool_call["function"]["arguments"])
             except (json.JSONDecodeError, TypeError) as e:
                 error_msg = f"Error: Malformed tool arguments: {e}"
+                # Fix the stored arguments so the API won't reject them on replay
+                tool_call["function"]["arguments"] = "{}"
                 tool_msg = {
                     "role": "tool",
                     "tool_call_id": tool_call["id"],

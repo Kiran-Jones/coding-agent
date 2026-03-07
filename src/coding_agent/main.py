@@ -1,6 +1,7 @@
 # main.py
 
 import os
+import re
 import shutil
 import sys
 import threading
@@ -61,8 +62,66 @@ class SlashCommandCompleter(Completer):
             except Exception:
                 self._cached_models = []
 
+    def _complete_file_path(self, partial: str):
+        """Yield file path completions for a partial path after '@'."""
+        # Split into directory part and name prefix
+        if "/" in partial:
+            dir_part, prefix = partial.rsplit("/", 1)
+            search_dir = os.path.abspath(dir_part)
+        else:
+            dir_part, prefix = "", partial
+            search_dir = os.getcwd()
+
+        if not os.path.isdir(search_dir):
+            return
+
+        try:
+            entries = os.listdir(search_dir)
+        except OSError:
+            return
+
+        # Fuzzy-ish: match entries that contain the prefix (case-insensitive)
+        prefix_lower = prefix.lower()
+        for entry in sorted(entries):
+            if entry.startswith("."):
+                continue
+            if prefix_lower and prefix_lower not in entry.lower():
+                continue
+
+            full_path = os.path.join(search_dir, entry)
+            rel = f"{dir_part}/{entry}" if dir_part else entry
+            is_dir = os.path.isdir(full_path)
+
+            if is_dir:
+                yield Completion(
+                    rel + "/",
+                    start_position=-len(partial),
+                    display_meta="dir",
+                )
+            else:
+                yield Completion(
+                    rel,
+                    start_position=-len(partial),
+                    display_meta="file",
+                )
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
+
+        # --- @file mention completions ---
+        # Find the last '@' that could be a file mention
+        at_idx = text.rfind("@")
+        if at_idx >= 0:
+            # '@' must be at start or preceded by whitespace
+            if at_idx == 0 or text[at_idx - 1] in (" ", "\t"):
+                partial = text[at_idx + 1:]
+                # Only complete if partial looks like a path (no spaces)
+                if " " not in partial:
+                    for completion in self._complete_file_path(partial):
+                        yield completion
+                    return
+
+        # --- Slash command completions ---
         if not text.startswith("/"):
             return
 
@@ -228,7 +287,9 @@ def handle_slash_commands(
 
     elif cmd == "/quit" or cmd == "/exit":
         if session_id:
-            manager.save_session(session_id, session_title, agent.messages, agent.full_history)
+            manager.save_session(
+                session_id, session_title, agent.messages, agent.full_history
+            )
         if agent.mcp_manager:
             agent.mcp_manager.shutdown()
         console.print("[bold red]Exiting...[/bold red]")
@@ -266,6 +327,58 @@ def create_prompt_session(agent: CodingAgent) -> PromptSession:
     )
 
 
+def parse_file_mentions(text: str) -> str:
+    """Replace @file mentions with the file's content injected into the message."""
+    mentions = re.findall(r"@([\w/.-]+(?::\d+-\d+)?)", text)
+    if not mentions:
+        return text
+
+    # Remove @mentions from the text, keeping just the filename
+    clean_text = re.sub(r"@([\w/.-]+(?::\d+-\d+)?)", r"`\1`", text)
+
+    file_blocks = []
+    for mention in mentions:
+        # Parse optional line range: file.py:10-20
+        if ":" in mention and mention.rsplit(":", 1)[1].replace("-", "").isdigit():
+            filepath, line_range = mention.rsplit(":", 1)
+        else:
+            filepath, line_range = mention, None
+
+        # Resolve relative to cwd
+        resolved = os.path.abspath(filepath)
+        if not os.path.isfile(resolved):
+            file_blocks.append(f"[File not found: {filepath}]")
+            continue
+
+        try:
+            with open(resolved) as f:
+                lines = f.readlines()
+        except Exception as e:
+            file_blocks.append(f"[Error reading {filepath}: {e}]")
+            continue
+
+        if line_range:
+            parts = line_range.split("-")
+            start = max(int(parts[0]) - 1, 0)
+            end = int(parts[1]) if len(parts) > 1 else start + 1
+            selected = lines[start:end]
+            header = f"{filepath}:{line_range}"
+        else:
+            selected = lines
+            header = filepath
+
+        # Truncate very large files
+        if len(selected) > 500:
+            selected = selected[:500]
+            header += " (truncated to 500 lines)"
+
+        content = "".join(selected)
+        file_blocks.append(f"--- {header} ---\n{content}")
+
+    attached = "\n\n".join(file_blocks)
+    return f"{clean_text}\n\n<attached-files>\n{attached}\n</attached-files>"
+
+
 def main():
 
     def print_agent_notification(message: str) -> None:
@@ -294,7 +407,7 @@ def main():
             _bar_last_redraw = now
         size = shutil.get_terminal_size()
         text = _bar_text(extra or _bar_status)
-        bar = text.ljust(size.columns)[:size.columns]
+        bar = text.ljust(size.columns)[: size.columns]
         # Use CSI s/u (separate save slot from DEC SC/RC used by enable/disable)
         sys.stdout.write(f"\033[s\033[{size.lines};1H\033[7m{bar}\033[0m\033[u")
         sys.stdout.flush()
@@ -383,7 +496,10 @@ def main():
         except (KeyboardInterrupt, EOFError):
             if current_session_id:
                 manager.save_session(
-                    current_session_id, current_session_title, agent.messages, agent.full_history
+                    current_session_id,
+                    current_session_title,
+                    agent.messages,
+                    agent.full_history,
                 )
             if agent.mcp_manager:
                 agent.mcp_manager.shutdown()
@@ -399,8 +515,13 @@ def main():
                 console.print("[bold red]Usage: /plan <task description>[/bold red]")
                 continue
 
-            console.print(Panel("[bold]Planning mode[/bold] — exploring before executing", border_style="cyan"))
-            agent.add_user_task(plan_task)
+            console.print(
+                Panel(
+                    "[bold]Planning mode[/bold] — exploring before executing",
+                    border_style="cyan",
+                )
+            )
+            agent.add_user_task(parse_file_mentions(plan_task))
 
             if current_session_id is None:
                 current_session_title = agent.generate_title(plan_task)
@@ -418,15 +539,29 @@ def main():
             disable_status_bar()
 
             if not plan_text:
-                console.print("[bold red]Planning failed — no plan produced.[/bold red]")
+                console.print(
+                    "[bold red]Planning failed — no plan produced.[/bold red]"
+                )
                 continue
 
-            console.print(Panel(Markdown(plan_text), title="Proposed Plan", border_style="cyan"))
-            answer = session.prompt("  Approve plan? (y/n/edit) > ", bottom_toolbar=get_toolbar).strip().lower()
+            console.print(
+                Panel(Markdown(plan_text), title="Proposed Plan", border_style="cyan")
+            )
+            answer = (
+                session.prompt(
+                    "  Approve plan? (y/n/edit) > ", bottom_toolbar=get_toolbar
+                )
+                .strip()
+                .lower()
+            )
 
             if answer in ("e", "edit"):
-                feedback = session.prompt("  Your feedback > ", bottom_toolbar=get_toolbar).strip()
-                agent.add_user_task(f"Revise your plan based on this feedback: {feedback}")
+                feedback = session.prompt(
+                    "  Your feedback > ", bottom_toolbar=get_toolbar
+                ).strip()
+                agent.add_user_task(
+                    f"Revise your plan based on this feedback: {feedback}"
+                )
                 enable_status_bar()
                 plan_text = agent.run_plan_loop(
                     stream_callback=print_stream_chunk,
@@ -436,8 +571,20 @@ def main():
                 stop_spinner()
                 disable_status_bar()
                 if plan_text:
-                    console.print(Panel(Markdown(plan_text), title="Revised Plan", border_style="cyan"))
-                    answer = session.prompt("  Approve plan? (y/n) > ", bottom_toolbar=get_toolbar).strip().lower()
+                    console.print(
+                        Panel(
+                            Markdown(plan_text),
+                            title="Revised Plan",
+                            border_style="cyan",
+                        )
+                    )
+                    answer = (
+                        session.prompt(
+                            "  Approve plan? (y/n) > ", bottom_toolbar=get_toolbar
+                        )
+                        .strip()
+                        .lower()
+                    )
                 else:
                     console.print("[bold red]Revised planning failed.[/bold red]")
                     continue
@@ -448,7 +595,9 @@ def main():
 
             # Clear planning exploration from working context, keep only system prompt
             agent.clear_working_context()
-            console.print("[italic dim yellow]Cleared planning context[/italic dim yellow]")
+            console.print(
+                "[italic dim yellow]Cleared planning context[/italic dim yellow]"
+            )
             # Inject approved plan as context for execution
             agent.add_user_task(f"Execute the following plan:\n\n{plan_text}")
             user_input = plan_task  # for session title / fall-through
@@ -459,7 +608,7 @@ def main():
             )
             continue
         else:
-            agent.add_user_task(user_input)
+            agent.add_user_task(parse_file_mentions(user_input))
 
         if current_session_id is None:
             current_session_title = agent.generate_title(user_input)
@@ -544,7 +693,10 @@ def main():
         finally:
             disable_status_bar()
             manager.save_session(
-                current_session_id, current_session_title, agent.messages, agent.full_history
+                current_session_id,
+                current_session_title,
+                agent.messages,
+                agent.full_history,
             )
 
 
