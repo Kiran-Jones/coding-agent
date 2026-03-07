@@ -227,7 +227,21 @@ def main():
     def print_agent_notification(message: str) -> None:
         console.print(message)
 
+    spinner = None
+
+    def stop_spinner():
+        nonlocal spinner
+        if spinner is not None:
+            spinner.stop()
+            spinner = None
+
+    def start_spinner():
+        nonlocal spinner
+        spinner = console.status("Thinking…", spinner="dots")
+        spinner.start()
+
     def print_stream_chunk(chunk: str) -> None:
+        stop_spinner()
         sys.stdout.write(chunk)
         sys.stdout.flush()
 
@@ -304,7 +318,9 @@ def main():
                         max_steps += 10
                     else:
                         # Force the agent to summarize what it did instead of just cutting off
+                        start_spinner()
                         result, msg = agent.run_step(force_text=True)
+                        stop_spinner()
                         if result not in ("tool_used", "error"):
                             console.print("\n[bold green]Agent Summary:[/bold green]")
                             console.print(Panel(Markdown(result), border_style="green"))
@@ -312,7 +328,9 @@ def main():
 
                 # On the last allowed step, force a text response so the agent wraps up
                 force_text = step == max_steps
+                start_spinner()
                 result, msg = agent.run_step(force_text=force_text)
+                stop_spinner()
 
                 if result == "error":
                     break
