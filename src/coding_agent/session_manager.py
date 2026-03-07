@@ -24,19 +24,25 @@ class SessionManager:
                     existing.append(int(name))
         return str(max(existing, default=0) + 1)
 
-    def create_session(self, messages: list, title: str) -> str:
+    def create_session(self, messages: list, title: str, full_history: list) -> str:
         """Create a new session file with a unique ID and return that ID."""
         session_id = self._next_id()
-        self.save_session(session_id, title, messages)
+        self.save_session(session_id, title, messages, full_history)
         return session_id
 
-    def save_session(self, session_id: str, title: str, messages: list):
-        """Save session data to a JSON file."""
+    def save_session(self, session_id: str, title: str, messages: list, full_history: list):
+        """Save session data to a JSON file.
+
+        Args:
+            messages: The working context (what gets sent to the API).
+            full_history: The complete message history including planning.
+        """
         session_data = {
             "id": session_id,
             "title": title,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "messages": messages,
+            "full_history": full_history,
         }
         with open(self._get_filepath(session_id), "w") as f:
             json.dump(session_data, f, indent=4)

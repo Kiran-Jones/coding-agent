@@ -1,8 +1,10 @@
 # main.py
 
 import os
+import shutil
 import sys
 import threading
+import time
 
 from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
@@ -38,6 +40,7 @@ SLASH_COMMANDS = {
     "/usage": "Show API token usage",
     "/verbose": "Toggle verbose/compact tool output",
     "/mcp": "Show MCP server status",
+    "/plan": "Plan before executing (usage: /plan <task>)",
     "/quit": "Exit the program",
     "/help": "Show help message",
 }
@@ -121,11 +124,14 @@ def handle_slash_commands(
         session_data = manager.load_session(target_id)
         if session_data:
             loaded_messages = session_data["messages"]
+            loaded_full_history = session_data["full_history"]
             # Reconcile system prompt: always use the current one
             if loaded_messages and loaded_messages[0].get("role") == "system":
                 loaded_messages[0] = {"role": "system", "content": SYSTEM_PROMPT}
+            if loaded_full_history and loaded_full_history[0].get("role") == "system":
+                loaded_full_history[0] = {"role": "system", "content": SYSTEM_PROMPT}
             agent.messages = loaded_messages
-            agent.full_history = list(loaded_messages)
+            agent.full_history = loaded_full_history
             session_id = session_data["id"]
             session_title = session_data["title"]
             console.print(
@@ -222,7 +228,7 @@ def handle_slash_commands(
 
     elif cmd == "/quit" or cmd == "/exit":
         if session_id:
-            manager.save_session(session_id, session_title, agent.full_history)
+            manager.save_session(session_id, session_title, agent.messages, agent.full_history)
         if agent.mcp_manager:
             agent.mcp_manager.shutdown()
         console.print("[bold red]Exiting...[/bold red]")
@@ -242,6 +248,7 @@ def handle_slash_commands(
                 "[bold cyan]/verbose[/] - Toggle verbose/compact tool output\n"
                 "[bold cyan]/mcp[/] - Show MCP server status\n"
                 "[bold cyan]/mcp tools[/] - List available MCP tools\n"
+                "[bold cyan]/plan <task>[/] - Plan before executing\n"
                 "[bold cyan]/quit[/] - Exit the program\n"
                 "[bold cyan]/help[/] - Show this help message",
                 title="Available Commands",
@@ -264,26 +271,81 @@ def main():
     def print_agent_notification(message: str) -> None:
         console.print(message)
 
-    spinner = None
+    # ── Persistent status bar ──────────────────────────────────────────
+    _bar_active = False
+    _bar_status = ""
+    _bar_last_redraw = 0.0
 
-    def stop_spinner():
-        nonlocal spinner
-        if spinner is not None:
-            spinner.stop()
-            spinner = None
+    def _bar_text(extra: str = "") -> str:
+        usage = agent.get_usage()
+        text = f" {agent.model} │ {usage['total_prompt_tokens']:,} in / {usage['total_completion_tokens']:,} out"
+        if extra:
+            text += f" │ {extra}"
+        return text
 
-    def start_spinner():
-        nonlocal spinner
-        spinner = console.status("Thinking…", spinner="dots")
-        spinner.start()
-
-    def print_stream_chunk(chunk: str) -> None:
-        stop_spinner()
-        sys.stdout.write(chunk)
+    def _draw_bar(extra: str = "", throttle: bool = False):
+        nonlocal _bar_last_redraw
+        if not _bar_active:
+            return
+        if throttle:
+            now = time.monotonic()
+            if now - _bar_last_redraw < 0.25:
+                return
+            _bar_last_redraw = now
+        size = shutil.get_terminal_size()
+        text = _bar_text(extra or _bar_status)
+        bar = text.ljust(size.columns)[:size.columns]
+        # Use CSI s/u (separate save slot from DEC SC/RC used by enable/disable)
+        sys.stdout.write(f"\033[s\033[{size.lines};1H\033[7m{bar}\033[0m\033[u")
         sys.stdout.flush()
 
+    def enable_status_bar():
+        nonlocal _bar_active, _bar_status
+        if _bar_active:
+            return
+        _bar_active = True
+        _bar_status = ""
+        size = shutil.get_terminal_size()
+        # DEC save cursor, set scroll region (excludes bottom line, moves cursor
+        # to home as a side-effect), DEC restore cursor to where it was.
+        sys.stdout.write(f"\0337\033[1;{size.lines - 1}r\0338")
+        sys.stdout.flush()
+        _draw_bar()
+
+    def disable_status_bar():
+        nonlocal _bar_active
+        if not _bar_active:
+            return
+        _bar_active = False
+        size = shutil.get_terminal_size()
+        # DEC save cursor, clear status line, reset scroll region (moves cursor
+        # to home as a side-effect), DEC restore cursor to where it was.
+        sys.stdout.write(f"\0337\033[{size.lines};1H\033[K\033[r\0338")
+        sys.stdout.flush()
+
+    # ── Spinner replacements (now just status bar text) ────────────────
+    def stop_spinner():
+        nonlocal _bar_status
+        _bar_status = ""
+        _draw_bar()
+
+    def start_spinner():
+        nonlocal _bar_status
+        _bar_status = "Thinking…"
+        _draw_bar()
+
+    def print_stream_chunk(chunk: str) -> None:
+        nonlocal _bar_status
+        if _bar_status == "Thinking…":
+            _bar_status = ""
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
+        _draw_bar(throttle=True)
+
     def approve_tool(func_name: str, arguments: dict) -> bool:
-        stop_spinner()
+        nonlocal _bar_status
+        _bar_status = ""
+        _draw_bar()
         arg_summary = ", ".join(f"{k}={str(v)[:80]}" for k, v in arguments.items())
         console.print(f"\n [bold yellow]{func_name}[/bold yellow]({arg_summary})")
         try:
@@ -321,7 +383,7 @@ def main():
         except (KeyboardInterrupt, EOFError):
             if current_session_id:
                 manager.save_session(
-                    current_session_id, current_session_title, agent.full_history
+                    current_session_id, current_session_title, agent.messages, agent.full_history
                 )
             if agent.mcp_manager:
                 agent.mcp_manager.shutdown()
@@ -331,27 +393,88 @@ def main():
         if not user_input:
             continue
 
-        if user_input.startswith("/"):
+        if user_input.startswith("/plan"):
+            plan_task = user_input[5:].strip()
+            if not plan_task:
+                console.print("[bold red]Usage: /plan <task description>[/bold red]")
+                continue
+
+            console.print(Panel("[bold]Planning mode[/bold] — exploring before executing", border_style="cyan"))
+            agent.add_user_task(plan_task)
+
+            if current_session_id is None:
+                current_session_title = agent.generate_title(plan_task)
+                current_session_id = manager.create_session(
+                    agent.messages, current_session_title, agent.full_history
+                )
+
+            enable_status_bar()
+            plan_text = agent.run_plan_loop(
+                stream_callback=print_stream_chunk,
+                spinner_start=start_spinner,
+                spinner_stop=stop_spinner,
+            )
+            stop_spinner()
+            disable_status_bar()
+
+            if not plan_text:
+                console.print("[bold red]Planning failed — no plan produced.[/bold red]")
+                continue
+
+            console.print(Panel(Markdown(plan_text), title="Proposed Plan", border_style="cyan"))
+            answer = session.prompt("  Approve plan? (y/n/edit) > ", bottom_toolbar=get_toolbar).strip().lower()
+
+            if answer in ("e", "edit"):
+                feedback = session.prompt("  Your feedback > ", bottom_toolbar=get_toolbar).strip()
+                agent.add_user_task(f"Revise your plan based on this feedback: {feedback}")
+                enable_status_bar()
+                plan_text = agent.run_plan_loop(
+                    stream_callback=print_stream_chunk,
+                    spinner_start=start_spinner,
+                    spinner_stop=stop_spinner,
+                )
+                stop_spinner()
+                disable_status_bar()
+                if plan_text:
+                    console.print(Panel(Markdown(plan_text), title="Revised Plan", border_style="cyan"))
+                    answer = session.prompt("  Approve plan? (y/n) > ", bottom_toolbar=get_toolbar).strip().lower()
+                else:
+                    console.print("[bold red]Revised planning failed.[/bold red]")
+                    continue
+
+            if answer not in ("y", "yes", ""):
+                console.print("[dim]Plan rejected.[/dim]")
+                continue
+
+            # Clear planning exploration from working context, keep only system prompt
+            agent.clear_working_context()
+            # Inject approved plan as context for execution
+            agent.add_user_task(f"Execute the following plan:\n\n{plan_text}")
+            user_input = plan_task  # for session title / fall-through
+
+        elif user_input.startswith("/"):
             current_session_id, current_session_title = handle_slash_commands(
                 user_input, agent, manager, current_session_id, current_session_title
             )
             continue
-
-        agent.add_user_task(user_input)
+        else:
+            agent.add_user_task(user_input)
 
         if current_session_id is None:
             current_session_title = agent.generate_title(user_input)
             current_session_id = manager.create_session(
-                agent.messages, current_session_title
+                agent.messages, current_session_title, agent.full_history
             )
 
         done = False
         step = 1
         max_steps = 35
+        enable_status_bar()
 
         try:
             while not done:
                 if step > max_steps:
+                    disable_status_bar()
                     console.print(
                         f"\n[bold yellow]Agent reached the maximum of {max_steps} steps.[/bold yellow]"
                     )
@@ -366,11 +489,14 @@ def main():
 
                     if keep_going == "y":
                         max_steps += 10
+                        enable_status_bar()
                     else:
+                        enable_status_bar()
                         # Force the agent to summarize what it did instead of just cutting off
                         start_spinner()
                         result, msg = agent.run_step(force_text=True)
                         stop_spinner()
+                        disable_status_bar()
                         if result not in ("tool_used", "error"):
                             console.print("\n[bold green]Agent Summary:[/bold green]")
                             console.print(Panel(Markdown(result), border_style="green"))
@@ -415,8 +541,9 @@ def main():
             console.print("\n[bold yellow]Task cancelled.[/bold yellow]")
 
         finally:
+            disable_status_bar()
             manager.save_session(
-                current_session_id, current_session_title, agent.full_history
+                current_session_id, current_session_title, agent.messages, agent.full_history
             )
 
 

@@ -9,6 +9,16 @@ from .tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 
 SYSTEM_PROMPT = "You are a coding agent. You have tools to write files and run terminal commands. Do NOT output raw code blocks for me to run. Use your 'write_file' tool to create the python scripts, and use your 'run_terminal_command' tool to execute and test them. When you have successfully completed the task and verified it works, just reply with a friendly message explaining what you did."
 
+PLAN_SYSTEM_ADDENDUM = (
+    "\n\nYou are in PLANNING MODE. Your job is to explore the codebase using "
+    "read_file, list_directory, web_search, and read_webpage, then produce a "
+    "clear step-by-step plan. Do NOT use write_file, replace_text_in_file, "
+    "run_terminal_command, or run_git_command. Only read and explore, then "
+    "present your plan."
+)
+
+READONLY_TOOLS = {"read_file", "list_directory", "web_search", "read_webpage"}
+
 
 class CodingAgent:
     def __init__(self, api_key, endpoint_url, ui_callback=None, stream_callback=None, approval_callback=None):
@@ -44,6 +54,8 @@ class CodingAgent:
                     context = f.read().strip()
                 if context:
                     self.messages[0]["content"] += f"\n\n## {label} Context (AGENT.md)\n{context}"
+
+        self.plan_mode = False
 
         self.mcp_manager = None
         try:
@@ -180,6 +192,19 @@ class CodingAgent:
                 summaries.append({"name": func_name, "args": {}, "result": error_msg})
                 continue
 
+            # Block non-read-only tools in plan mode
+            if self.plan_mode and func_name not in READONLY_TOOLS and "__" not in func_name:
+                result = f"Error: {func_name} is not available in planning mode. Only read-only tools can be used."
+                tool_msg = {
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": result,
+                }
+                self.messages.append(tool_msg)
+                self.full_history.append(tool_msg)
+                summaries.append({"name": func_name, "args": arguments, "result": result})
+                continue
+
             if self._requires_approval(func_name, arguments):
                 if not self._get_user_approval(func_name, arguments):
                     result = "Tool call denied by user."
@@ -236,6 +261,49 @@ class CodingAgent:
                 }
             )
         return summaries
+
+    def run_plan_loop(self, stream_callback=None, spinner_start=None, spinner_stop=None) -> str | None:
+        """Run a read-only planning loop. Returns the plan text."""
+        self.plan_mode = True
+        # Temporarily modify system prompt
+        original_content = self.messages[0]["content"]
+        self.messages[0]["content"] += PLAN_SYSTEM_ADDENDUM
+
+        plan_text = None
+        max_steps = 15
+
+        try:
+            for step in range(1, max_steps + 1):
+                force_text = (step == max_steps)
+                if spinner_start:
+                    spinner_start()
+                result, msg = self.run_step(force_text=force_text)
+                if spinner_stop:
+                    spinner_stop()
+
+                if result == "error":
+                    break
+                elif result == "tool_used":
+                    # Tool results are already in messages; continue planning
+                    if stream_callback:
+                        for tc in msg:
+                            is_error = tc["result"].startswith("Error")
+                            icon = "✗" if is_error else "✓"
+                            stream_callback(f"\n  {icon} {tc['name']}\n")
+                    continue
+                else:
+                    # Got text response — this is the plan
+                    plan_text = result
+                    break
+        finally:
+            self.plan_mode = False
+            self.messages[0]["content"] = original_content
+
+        return plan_text
+
+    def clear_working_context(self) -> None:
+        """Reset working messages to just the system prompt, preserving full_history."""
+        self.messages = [self.messages[0]]
 
     def add_user_task(self, user_input: str) -> None:
         """Add a user message to the conversation."""
