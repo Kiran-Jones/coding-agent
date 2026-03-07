@@ -32,10 +32,17 @@ class CodingAgent:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 
-    def add_user_task(self, prompt: str):
-        msg = {"role": "user", "content": prompt}
-        self.messages.append(msg)
-        self.full_history.append(msg)
+        self.mcp_manager = None
+        try:
+            from .mcp_manager import MCPManager, GLOBAL_CONFIG, PROJECT_CONFIG
+
+            config_paths = [GLOBAL_CONFIG, PROJECT_CONFIG]
+            if any(os.path.exists(p) for p in config_paths):
+                self.mcp_manager = MCPManager(config_paths)
+                self.mcp_manager.initialize()
+        except Exception as e:
+            self.ui_callback(f"[bold red]Failed to initialize MCP: {e}[/bold red]")
+
 
     def run_step(self, force_text=False) -> tuple[str, dict | None]:
         self.messages, did_compact = smart_compact(
@@ -50,7 +57,7 @@ class CodingAgent:
         payload = {
             "model": self.model,
             "messages": self.messages,
-            "tools": TOOL_SCHEMAS,
+            "tools": self._get_all_tools(),
             "tool_choice": "none" if force_text else "auto",
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -149,38 +156,61 @@ class CodingAgent:
             func_name = tool_call["function"]["name"]
             arguments = json.loads(tool_call["function"]["arguments"])
 
-            if func_name in AVAILABLE_TOOLS:
+            if "__" in func_name and self.mcp_manager:
+                try:
+                    result = self.mcp_manager.call_tool(func_name, arguments)
+                except Exception as e:
+                    result = f"Error: MCP tool failed: {e}"
+                display_args = arguments
+            elif func_name in AVAILABLE_TOOLS:
                 func_to_call = AVAILABLE_TOOLS[func_name]
-                # Filter out any arguments the LLM hallucinated
                 valid_params = inspect.signature(func_to_call).parameters
                 filtered_args = {
                     k: v for k, v in arguments.items() if k in valid_params
                 }
                 result = str(func_to_call(**filtered_args))
+                display_args = filtered_args
+            else:
+                result = f"Error: Unknown tool '{func_name}'"
+                display_args = arguments
 
-                # Report the result back to the LLM's memory
-                tool_msg = {
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": result,
-                }
-                self.messages.append(tool_msg)
-                self.full_history.append(tool_msg)
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "content": result,
+            }
+            self.messages.append(tool_msg)
+            self.full_history.append(tool_msg)
 
-                # Build a truncated summary for display
-                truncated_args = {
-                    k: (str(v)[:100] + "…" if len(str(v)) > 100 else v)
-                    for k, v in filtered_args.items()
+            truncated_args = {
+                k: (str(v)[:100] + "…" if len(str(v)) > 100 else v)
+                for k, v in display_args.items()
+            }
+            truncated_result = result[:200] + "…" if len(result) > 200 else result
+            summaries.append(
+                {
+                    "name": func_name,
+                    "args": truncated_args,
+                    "result": truncated_result,
                 }
-                truncated_result = result[:200] + "…" if len(result) > 200 else result
-                summaries.append(
-                    {
-                        "name": func_name,
-                        "args": truncated_args,
-                        "result": truncated_result,
-                    }
-                )
+            )
         return summaries
+
+    def add_user_task(self, user_input: str) -> None:
+        """Add a user message to the conversation."""
+        msg = {"role": "user", "content": user_input}
+        self.messages.append(msg)
+        self.full_history.append(msg)
+
+    def _get_all_tools(self) -> list[dict]:
+        """Return built-in tools plus any MCP tools."""
+        tools = list(TOOL_SCHEMAS)
+        if self.mcp_manager:
+            try:
+                tools.extend(self.mcp_manager.get_tools())
+            except Exception:
+                pass
+        return tools
 
     def list_models(self) -> list[str]:
         """Fetch available model IDs from the API."""

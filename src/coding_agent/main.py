@@ -37,6 +37,7 @@ SLASH_COMMANDS = {
     "/model": "Show, list, or switch models",
     "/usage": "Show API token usage",
     "/verbose": "Toggle verbose/compact tool output",
+    "/mcp": "Show MCP server status",
     "/quit": "Exit the program",
     "/help": "Show help message",
 }
@@ -187,9 +188,43 @@ def handle_slash_commands(
         label = "verbose" if verbose_mode else "compact"
         console.print(f"[bold green]Tool output: {label}[/bold green]")
 
+    elif cmd == "/mcp":
+        if not agent.mcp_manager:
+            console.print("[dim]No MCP config found (mcp_config.json).[/dim]")
+        elif len(parts) > 1 and parts[1] == "tools":
+            try:
+                tools = agent.mcp_manager.get_tools()
+                if tools:
+                    from rich.table import Table
+
+                    table = Table(title="MCP Tools", border_style="cyan")
+                    table.add_column("Name", style="bold")
+                    table.add_column("Description", style="dim")
+                    for t in tools:
+                        fn = t["function"]
+                        table.add_row(fn["name"], fn.get("description", ""))
+                    console.print(table)
+                else:
+                    console.print("[dim]No MCP tools available.[/dim]")
+            except Exception as e:
+                console.print(f"[bold red]Failed to list MCP tools: {e}[/bold red]")
+        else:
+            from rich.table import Table
+
+            status = agent.mcp_manager.get_server_status()
+            table = Table(title="MCP Servers", border_style="cyan")
+            table.add_column("Server", style="bold")
+            table.add_column("Status")
+            for name, st in status.items():
+                style = "green" if st == "running" else "red"
+                table.add_row(name, f"[{style}]{st}[/{style}]")
+            console.print(table)
+
     elif cmd == "/quit" or cmd == "/exit":
         if session_id:
             manager.save_session(session_id, session_title, agent.full_history)
+        if agent.mcp_manager:
+            agent.mcp_manager.shutdown()
         console.print("[bold red]Exiting...[/bold red]")
         sys.exit(0)
 
@@ -205,6 +240,8 @@ def handle_slash_commands(
                 "[bold cyan]/model <name>[/] - Switch model\n"
                 "[bold cyan]/usage[/] - Show API token usage\n"
                 "[bold cyan]/verbose[/] - Toggle verbose/compact tool output\n"
+                "[bold cyan]/mcp[/] - Show MCP server status\n"
+                "[bold cyan]/mcp tools[/] - List available MCP tools\n"
                 "[bold cyan]/quit[/] - Exit the program\n"
                 "[bold cyan]/help[/] - Show this help message",
                 title="Available Commands",
@@ -275,6 +312,8 @@ def main():
                 manager.save_session(
                     current_session_id, current_session_title, agent.full_history
                 )
+            if agent.mcp_manager:
+                agent.mcp_manager.shutdown()
             console.print("\n[bold red]Exiting...[/bold red]")
             break
 
