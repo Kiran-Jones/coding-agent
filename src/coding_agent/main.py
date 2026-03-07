@@ -448,6 +448,7 @@ def main():
 
             # Clear planning exploration from working context, keep only system prompt
             agent.clear_working_context()
+            console.print("[italic dim yellow]Cleared planning context[/italic dim yellow]")
             # Inject approved plan as context for execution
             agent.add_user_task(f"Execute the following plan:\n\n{plan_text}")
             user_input = plan_task  # for session title / fall-through
