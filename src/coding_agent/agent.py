@@ -113,6 +113,20 @@ class CodingAgent:
                 )
         return summaries
 
+    def list_models(self) -> list[str]:
+        """Fetch available model IDs from the API."""
+        # Derive models URL from the completions endpoint
+        base_url = self.endpoint_url.rsplit("/chat/completions", 1)[0]
+        models_url = f"{base_url}/models"
+        response = requests.get(
+            models_url,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return sorted(m["id"] for m in data.get("data", []))
+
     def generate_title(self, user_input: str) -> str:
         """Generate a short session title from the first user message."""
         try:

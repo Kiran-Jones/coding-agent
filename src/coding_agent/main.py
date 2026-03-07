@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 
 from dotenv import load_dotenv
 from prompt_toolkit import PromptSession
@@ -29,23 +30,62 @@ verbose_mode = True
 
 SLASH_COMMANDS = {
     "/sessions": "List all saved sessions",
-    "/load": "Load a saved session",
     "/new": "Start a new session",
+    "/delete": "Delete a session",
+    "/load": "Load a saved session",
+    "/model": "Show, list, or switch models",
     "/verbose": "Toggle verbose/compact tool output",
     "/quit": "Exit the program",
-    "/exit": "Exit the program",
     "/help": "Show help message",
 }
 
 
 class SlashCommandCompleter(Completer):
+    def __init__(self, agent=None):
+        self.agent = agent
+        self._cached_models = None
+
+    def _get_models(self):
+        return self._cached_models or []
+
+    def fetch_models(self):
+        if self.agent:
+            try:
+                self._cached_models = self.agent.list_models()
+            except Exception:
+                self._cached_models = []
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
-        for cmd, desc in SLASH_COMMANDS.items():
-            if cmd.startswith(text):
-                yield Completion(cmd, start_position=-len(text), display_meta=desc)
+
+        parts = text.split(None, 1)
+
+        # Still typing the command name
+        if len(parts) == 1 and not text.endswith(" "):
+            for cmd, desc in SLASH_COMMANDS.items():
+                if cmd.startswith(text):
+                    yield Completion(cmd, start_position=-len(text), display_meta=desc)
+            return
+
+        # Subcommand completions for /model
+        if parts[0] == "/model":
+            arg = parts[1] if len(parts) > 1 else ""
+            if "list".startswith(arg):
+                yield Completion(
+                    "list",
+                    start_position=-len(arg),
+                    display_meta="Show available models",
+                )
+            for model_id in self._get_models():
+                if model_id.startswith(arg):
+                    active = (
+                        "current" if self.agent and model_id == self.agent.model else ""
+                    )
+                    yield Completion(
+                        model_id, start_position=-len(arg), display_meta=active
+                    )
 
 
 def print_session_table(sessions: list):
@@ -99,6 +139,36 @@ def handle_slash_commands(
         session_title = "New Chat"
         console.print("[bold green]Started a new session.[/bold green]")
 
+    elif cmd == "/delete":
+        if len(parts) > 1:
+            target_id = parts[1]
+            if manager.delete_session(target_id):
+                console.print(
+                    f"[bold green]Session '{target_id}' deleted successfully![/bold green]"
+                )
+            else:
+                console.print(
+                    f"[bold red]No session found with ID '{target_id}'.[/bold red]"
+                )
+        else:
+            console.print("[bold red]Usage: /delete <session_id>[/bold red]")
+
+    elif cmd == "/model":
+        if len(parts) == 1:
+            console.print(f"[bold]Current model:[/bold] {agent.model}")
+        elif parts[1] == "list":
+            try:
+                models = agent.list_models()
+                console.print("[bold]Available models:[/bold]")
+                for m in models:
+                    marker = " [green]◀[/green]" if m == agent.model else ""
+                    console.print(f"  {m}{marker}")
+            except Exception as e:
+                console.print(f"[bold red]Failed to fetch models: {e}[/bold red]")
+        else:
+            agent.model = parts[1]
+            console.print(f"[bold green]Model set to: {agent.model}[/bold green]")
+
     elif cmd == "/verbose":
         global verbose_mode
         verbose_mode = not verbose_mode
@@ -110,12 +180,17 @@ def handle_slash_commands(
             manager.save_session(session_id, session_title, agent.full_history)
         console.print("[bold red]Exiting...[/bold red]")
         sys.exit(0)
+
     else:
         console.print(
             Panel.fit(
                 "[bold cyan]/sessions[/] - List all saved sessions\n"
-                "[bold cyan]/load <session_name>[/] - Load a saved session\n"
                 "[bold cyan]/new[/] - Start a new session\n"
+                "[bold cyan]/load <session_name>[/] - Load a saved session\n"
+                "[bold cyan]/delete <session_name>[/] - Delete a session\n"
+                "[bold cyan]/model[/] - Show current model\n"
+                "[bold cyan]/model list[/] - List available models\n"
+                "[bold cyan]/model <name>[/] - Switch model\n"
                 "[bold cyan]/verbose[/] - Toggle verbose/compact tool output\n"
                 "[bold cyan]/quit[/] - Exit the program\n"
                 "[bold cyan]/help[/] - Show this help message",
@@ -127,9 +202,11 @@ def handle_slash_commands(
     return session_id, session_title
 
 
-def create_prompt_session() -> PromptSession:
+def create_prompt_session(agent: CodingAgent) -> PromptSession:
     """Create a prompt_toolkit session. Enter submits."""
-    return PromptSession(completer=SlashCommandCompleter(), complete_while_typing=True)
+    return PromptSession(
+        completer=SlashCommandCompleter(agent), complete_while_typing=True
+    )
 
 
 def main():
@@ -143,7 +220,8 @@ def main():
         ui_callback=print_agent_notification,
     )
     manager = SessionManager()
-    session = create_prompt_session()
+    session = create_prompt_session(agent)
+    threading.Thread(target=session.completer.fetch_models, daemon=True).start()
 
     current_session_id = None
     current_session_title = "New Chat"
