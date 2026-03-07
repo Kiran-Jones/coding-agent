@@ -282,11 +282,22 @@ def main():
         sys.stdout.write(chunk)
         sys.stdout.flush()
 
+    def approve_tool(func_name: str, arguments: dict) -> bool:
+        stop_spinner()
+        arg_summary = ", ".join(f"{k}={str(v)[:80]}" for k, v in arguments.items())
+        console.print(f"\n [bold yellow]{func_name}[/bold yellow]({arg_summary})")
+        try:
+            answer = PromptSession().prompt("   Allow? (y/n) > ").strip().lower()
+            return answer in ("y", "yes", "")
+        except (KeyboardInterrupt, EOFError):
+            return False
+
     agent = CodingAgent(
         api_key=API_KEY,
         endpoint_url=ENDPOINT_URL,
         ui_callback=print_agent_notification,
         stream_callback=print_stream_chunk,
+        approval_callback=approve_tool,
     )
     manager = SessionManager()
     session = create_prompt_session(agent)

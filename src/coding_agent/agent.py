@@ -11,12 +11,13 @@ SYSTEM_PROMPT = "You are a coding agent. You have tools to write files and run t
 
 
 class CodingAgent:
-    def __init__(self, api_key, endpoint_url, ui_callback=None, stream_callback=None):
+    def __init__(self, api_key, endpoint_url, ui_callback=None, stream_callback=None, approval_callback=None):
         self.api_key = api_key
         self.endpoint_url = endpoint_url
 
         self.ui_callback = ui_callback if ui_callback else lambda msg: None
         self.stream_callback = stream_callback if stream_callback else lambda msg: None
+        self.approval_callback = approval_callback  # None = auto-approve everything
 
         self.model = os.getenv("MODEL_NAME", "qwen.qwen3-vl-32b-instruct-fp8")
         self.title_model = os.getenv("TITLE_MODEL", self.model)
@@ -34,7 +35,7 @@ class CodingAgent:
 
         self.mcp_manager = None
         try:
-            from .mcp_manager import MCPManager, GLOBAL_CONFIG, PROJECT_CONFIG
+            from .mcp_manager import GLOBAL_CONFIG, PROJECT_CONFIG, MCPManager
 
             config_paths = [GLOBAL_CONFIG, PROJECT_CONFIG]
             if any(os.path.exists(p) for p in config_paths):
@@ -42,7 +43,6 @@ class CodingAgent:
                 self.mcp_manager.initialize()
         except Exception as e:
             self.ui_callback(f"[bold red]Failed to initialize MCP: {e}[/bold red]")
-
 
     def run_step(self, force_text=False) -> tuple[str, dict | None]:
         self.messages, did_compact = smart_compact(
@@ -156,6 +156,21 @@ class CodingAgent:
             func_name = tool_call["function"]["name"]
             arguments = json.loads(tool_call["function"]["arguments"])
 
+            if self._requires_approval(func_name, arguments):
+                if not self._get_user_approval(func_name, arguments):
+                    result = "Tool call denied by user."
+                    tool_msg = {
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": result,
+                    }
+                    self.messages.append(tool_msg)
+                    self.full_history.append(tool_msg)
+                    summaries.append(
+                        {"name": func_name, "args": {}, "result": result}
+                    )
+                    continue
+
             if "__" in func_name and self.mcp_manager:
                 try:
                     result = self.mcp_manager.call_tool(func_name, arguments)
@@ -268,3 +283,21 @@ class CodingAgent:
             "total_completion_tokens": self.total_completion_tokens,
             "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
         }
+
+    def _requires_approval(self, func_name: str, arguments: dict) -> bool:
+        """Determine if a tool call requires user approval."""
+        if not self.approval_callback:
+            return False
+        # MCP tools always need approval
+        if "__" in func_name:
+            return True
+        # Terminal commands and file writes need approval
+        if func_name in ("run_terminal_command", "write_file"):
+            return True
+        return False
+
+    def _get_user_approval(self, func_name: str, arguments: dict) -> bool:
+        """Ask the user for approval via the approval callback."""
+        if not self.approval_callback:
+            return True
+        return self.approval_callback(func_name, arguments)
