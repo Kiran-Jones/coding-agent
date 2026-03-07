@@ -85,7 +85,7 @@ def run_terminal_command(command: str, output_callback=None) -> str:
 
 
 def write_file(file_path: str, content: str) -> str:
-    """Write content to a file. Only accepts 'file_path' (the path to write to) and 'content' (the full file content). Returns success message or error."""
+    """Write content to a file. Parameters: 'file_path' (string, the file location to write to) and 'content' (string, the complete file content). Returns success message or error."""
     try:
         parent = os.path.dirname(file_path)
         if parent:
@@ -172,7 +172,7 @@ def list_directory(path: str = ".") -> str:
 
 
 def read_file(file_path: str) -> str:
-    """Reads a file and returns its contents with line numbers. Only accepts 'file_path' (the path to read). Use this to inspect code."""
+    """Reads a file and returns its contents with line numbers. Parameter: 'file_path' (string, the file location to read). Use this to inspect code."""
     
     try:
         with open(file_path, "r") as f:
@@ -197,7 +197,7 @@ def read_file(file_path: str) -> str:
 
 
 def replace_text_in_file(file_path: str, old_text: str, new_text: str) -> str:
-    """Replaces old_text with new_text in the specified file. Only accepts 'file_path', 'old_text' (exact string to find), and 'new_text' (replacement string). Returns success message or error."""
+    """Replaces old_text with new_text in the specified file. Parameters: 'file_path' (string, the file location), 'old_text' (string, exact text to find), and 'new_text' (string, replacement text). Returns success message or error."""
     
     try:
         with open(file_path, "r") as f:
