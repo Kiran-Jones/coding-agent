@@ -1,0 +1,25 @@
+# Testing Dependencies for AI Coding Agent
+# Install with: pip install -r tests/requirements.txt
+
+# Core testing framework
+pytest==7.4.0
+pytest-asyncio==0.21.0
+pytest-cov==4.1.0
+pytest-mock==3.11.1
+pytest-timeout==2.1.0
+
+# Mocking and fixtures
+responses==0.23.1
+freezegun==1.2.2
+
+# Additional testing utilities
+pytest-xdist==3.3.1          # Parallel test execution
+pytest-html==3.2.0           # HTML test reports
+pytest-benchmark==4.0.0      # Performance benchmarking
+
+# Code quality
+coverage==7.2.0
+black==23.7.0
+flake8==6.0.0
+mypy==1.4.1
+isort==5.12.0

@@ -1,10 +1,8 @@
 import sys
 
 from prompt_toolkit import PromptSession
-from rich.console import Console
 
 from .markdown_renderer import LiveMarkdownRenderer
-from .status_bar import StatusBar
 
 
 class AgentUI:
