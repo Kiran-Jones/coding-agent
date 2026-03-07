@@ -14,6 +14,7 @@ from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.table import Table
 
 from .agent import SYSTEM_PROMPT, CodingAgent
 from .session_manager import SessionManager
@@ -33,17 +34,24 @@ console = Console()
 verbose_mode = True
 
 SLASH_COMMANDS = {
-    "/sessions": "List all saved sessions",
+    # Sessions
     "/new": "Start a new session",
-    "/delete": "Delete a session",
+    "/sessions": "List all saved sessions",
     "/load": "Load a saved session",
+    "/delete": "Delete a session",
+    # Workflow
+    "/plan": "Plan before executing",
+    "/history": "Show agent file change history",
+    "/undo": "Undo last file change",
+    "/redo": "Redo last undone change",
+    # Settings
     "/model": "Show, list, or switch models",
     "/usage": "Show API token usage",
     "/verbose": "Toggle verbose/compact tool output",
     "/mcp": "Show MCP server status",
-    "/plan": "Plan before executing (usage: /plan <task>)",
-    "/quit": "Exit the program",
+    # Meta
     "/help": "Show help message",
+    "/quit": "Exit the program",
 }
 
 
@@ -114,7 +122,7 @@ class SlashCommandCompleter(Completer):
         if at_idx >= 0:
             # '@' must be at start or preceded by whitespace
             if at_idx == 0 or text[at_idx - 1] in (" ", "\t"):
-                partial = text[at_idx + 1:]
+                partial = text[at_idx + 1 :]
                 # Only complete if partial looks like a path (no spaces)
                 if " " not in partial:
                     for completion in self._complete_file_path(partial):
@@ -155,7 +163,6 @@ class SlashCommandCompleter(Completer):
 
 def print_session_table(sessions: list):
     """Helper to print a table of saved sessions."""
-    from rich.table import Table
 
     table = Table(title="Saved Sessions", border_style="cyan")
     table.add_column("ID", style="dim")
@@ -247,6 +254,48 @@ def handle_slash_commands(
             )
         )
 
+    elif cmd == "/history":
+        history = agent.snapshot_manager.get_history()
+        if not history:
+            console.print("[dim]No file changes yet.[/dim]")
+        else:
+            table = Table(title="File Change History", border_style="cyan")
+            table.add_column("#", style="dim")
+            table.add_column("File", style="bold")
+            table.add_column("Action")
+            table.add_column("Time", style="dim")
+            for entry in history:
+                ago = int(time.time() - entry["timestamp"])
+                if ago < 60:
+                    time_str = f"{ago}s ago"
+                else:
+                    time_str = f"{ago // 60}m ago"
+                table.add_row(
+                    str(entry["id"]),
+                    entry["file_path"],
+                    entry["action"],
+                    time_str,
+                )
+            console.print(table)
+
+    elif cmd == "/undo":
+        result = agent.snapshot_manager.undo()
+        if result:
+            console.print(
+                f"[bold green]Undid change to {result['file_path']}[/bold green]"
+            )
+        else:
+            console.print("[dim]Nothing to undo.[/dim]")
+
+    elif cmd == "/redo":
+        result = agent.snapshot_manager.redo()
+        if result:
+            console.print(
+                f"[bold green]Redid change to {result['file_path']}[/bold green]"
+            )
+        else:
+            console.print("[dim]Nothing to redo.[/dim]")
+
     elif cmd == "/verbose":
         global verbose_mode
         verbose_mode = not verbose_mode
@@ -260,8 +309,6 @@ def handle_slash_commands(
             try:
                 tools = agent.mcp_manager.get_tools()
                 if tools:
-                    from rich.table import Table
-
                     table = Table(title="MCP Tools", border_style="cyan")
                     table.add_column("Name", style="bold")
                     table.add_column("Description", style="dim")
@@ -274,8 +321,6 @@ def handle_slash_commands(
             except Exception as e:
                 console.print(f"[bold red]Failed to list MCP tools: {e}[/bold red]")
         else:
-            from rich.table import Table
-
             status = agent.mcp_manager.get_server_status()
             table = Table(title="MCP Servers", border_style="cyan")
             table.add_column("Server", style="bold")
@@ -298,20 +343,24 @@ def handle_slash_commands(
     else:
         console.print(
             Panel.fit(
-                "[bold cyan]/sessions[/] - List all saved sessions\n"
+                "[bold dim]Sessions[/bold dim]\n"
                 "[bold cyan]/new[/] - Start a new session\n"
-                "[bold cyan]/load <session_name>[/] - Load a saved session\n"
-                "[bold cyan]/delete <session_name>[/] - Delete a session\n"
-                "[bold cyan]/model[/] - Show current model\n"
-                "[bold cyan]/model list[/] - List available models\n"
-                "[bold cyan]/model <name>[/] - Switch model\n"
+                "[bold cyan]/sessions[/] - List all saved sessions\n"
+                "[bold cyan]/load <id>[/] - Load a saved session\n"
+                "[bold cyan]/delete <id>[/] - Delete a session\n"
+                "\n[bold dim]Workflow[/bold dim]\n"
+                "[bold cyan]/plan <task>[/] - Plan before executing\n"
+                "[bold cyan]/history[/] - Show agent file change history\n"
+                "[bold cyan]/undo[/] - Undo last file change\n"
+                "[bold cyan]/redo[/] - Redo last undone change\n"
+                "\n[bold dim]Settings[/bold dim]\n"
+                "[bold cyan]/model[/] - Show, list, or switch models\n"
                 "[bold cyan]/usage[/] - Show API token usage\n"
                 "[bold cyan]/verbose[/] - Toggle verbose/compact tool output\n"
                 "[bold cyan]/mcp[/] - Show MCP server status\n"
-                "[bold cyan]/mcp tools[/] - List available MCP tools\n"
-                "[bold cyan]/plan <task>[/] - Plan before executing\n"
-                "[bold cyan]/quit[/] - Exit the program\n"
-                "[bold cyan]/help[/] - Show this help message",
+                "\n[bold dim]Meta[/bold dim]\n"
+                "[bold cyan]/help[/] - Show this help message\n"
+                "[bold cyan]/quit[/] - Exit the program",
                 title="Available Commands",
                 border_style="cyan",
             )
@@ -668,17 +717,16 @@ def main():
                                 f'{k}="{v}"' for k, v in tc["args"].items()
                             )
                             result_style = "red" if is_error else "green"
-                            result_icon = "✗" if is_error else "✓"
                             console.print(
                                 f" [bold]┃[/bold] [bold]{tc['name']}[/bold]([dim]{args_str}[/dim])"
                             )
                             console.print(
-                                f" [bold]┃[/bold] [{result_style}]{result_icon} {tc['result']}[/{result_style}]"
+                                f" [bold]┃[/bold] [{result_style}]{tc['result']}[/{result_style}]"
                             )
                             console.print(" [bold]┃[/bold]")
                         else:
-                            icon = "[red]✗[/red]" if is_error else "[green]✓[/green]"
-                            console.print(f" {icon} [bold]{tc['name']}[/bold]")
+                            result_style = "red" if is_error else "green"
+                            console.print(f" [bold]{tc['name']}[/bold] [{result_style}]{tc['result']}[/{result_style}]")
                 else:
                     sys.stdout.write("\n")
                     # console.print("\n[bold green]Agent Finished Task:[/bold green]")

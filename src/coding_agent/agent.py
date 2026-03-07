@@ -1,10 +1,12 @@
 import inspect
 import json
 import os
+import time
 
 import requests
 
 from .memory_utils import smart_compact
+from .snapshot_manager import SnapshotManager
 from .tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 
 SYSTEM_PROMPT = "You are a coding agent. You have tools to write files and run terminal commands. Do NOT output raw code blocks for me to run. Use your 'write_file' tool to create the python scripts, and use your 'run_terminal_command' tool to execute and test them. When you have successfully completed the task and verified it works, just reply with a friendly message explaining what you did."
@@ -21,7 +23,14 @@ READONLY_TOOLS = {"read_file", "list_directory", "web_search", "read_webpage"}
 
 
 class CodingAgent:
-    def __init__(self, api_key, endpoint_url, ui_callback=None, stream_callback=None, approval_callback=None):
+    def __init__(
+        self,
+        api_key,
+        endpoint_url,
+        ui_callback=None,
+        stream_callback=None,
+        approval_callback=None,
+    ):
         self.api_key = api_key
         self.endpoint_url = endpoint_url
 
@@ -40,6 +49,8 @@ class CodingAgent:
         ]
         self.full_history = list(self.messages)
 
+        self.snapshot_manager = SnapshotManager()
+
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 
@@ -53,7 +64,9 @@ class CodingAgent:
                 with open(path) as f:
                     context = f.read().strip()
                 if context:
-                    self.messages[0]["content"] += f"\n\n## {label} Context (AGENT.md)\n{context}"
+                    self.messages[0]["content"] += (
+                        f"\n\n## {label} Context (AGENT.md)\n{context}"
+                    )
 
         self.plan_mode = False
 
@@ -195,7 +208,11 @@ class CodingAgent:
                 continue
 
             # Block non-read-only tools in plan mode
-            if self.plan_mode and func_name not in READONLY_TOOLS and "__" not in func_name:
+            if (
+                self.plan_mode
+                and func_name not in READONLY_TOOLS
+                and "__" not in func_name
+            ):
                 result = f"Error: {func_name} is not available in planning mode. Only read-only tools can be used."
                 tool_msg = {
                     "role": "tool",
@@ -204,7 +221,9 @@ class CodingAgent:
                 }
                 self.messages.append(tool_msg)
                 self.full_history.append(tool_msg)
-                summaries.append({"name": func_name, "args": arguments, "result": result})
+                summaries.append(
+                    {"name": func_name, "args": arguments, "result": result}
+                )
                 continue
 
             if self._requires_approval(func_name, arguments):
@@ -217,9 +236,7 @@ class CodingAgent:
                     }
                     self.messages.append(tool_msg)
                     self.full_history.append(tool_msg)
-                    summaries.append(
-                        {"name": func_name, "args": {}, "result": result}
-                    )
+                    summaries.append({"name": func_name, "args": {}, "result": result})
                     continue
 
             if "__" in func_name and self.mcp_manager:
@@ -236,8 +253,34 @@ class CodingAgent:
                 }
                 if func_name == "run_terminal_command":
                     filtered_args["output_callback"] = self.stream_callback
+
+                if func_name in ("write_file", "replace_text_in_file"):
+                    file_path = arguments.get("file_path", "")
+                    if file_path and os.path.exists(file_path):
+                        # read existing content from file
+                        with open(file_path, "r") as file:
+                            original = file.read()
+                            self.snapshot_manager.save_snapshot(
+                                {
+                                    "file_path": file_path,
+                                    "original": original,
+                                    "timestamp": time.time(),
+                                }
+                            )
+                    if file_path and not os.path.exists(file_path):
+                        # save empty snapshot
+                        self.snapshot_manager.save_snapshot(
+                            {
+                                "file_path": file_path,
+                                "original": None,
+                                "timestamp": time.time(),
+                            }
+                        )
+
                 result = str(func_to_call(**filtered_args))
-                display_args = {k: v for k, v in filtered_args.items() if k != "output_callback"}
+                display_args = {
+                    k: v for k, v in filtered_args.items() if k != "output_callback"
+                }
             else:
                 result = f"Error: Unknown tool '{func_name}'"
                 display_args = arguments
@@ -264,7 +307,9 @@ class CodingAgent:
             )
         return summaries
 
-    def run_plan_loop(self, stream_callback=None, spinner_start=None, spinner_stop=None) -> str | None:
+    def run_plan_loop(
+        self, stream_callback=None, spinner_start=None, spinner_stop=None
+    ) -> str | None:
         """Run a read-only planning loop. Returns the plan text."""
         self.plan_mode = True
         # Temporarily modify system prompt
@@ -276,7 +321,7 @@ class CodingAgent:
 
         try:
             for step in range(1, max_steps + 1):
-                force_text = (step == max_steps)
+                force_text = step == max_steps
                 if spinner_start:
                     spinner_start()
                 result, msg = self.run_step(force_text=force_text)
@@ -290,8 +335,7 @@ class CodingAgent:
                     if stream_callback:
                         for tc in msg:
                             is_error = tc["result"].startswith("Error")
-                            icon = "✗" if is_error else "✓"
-                            stream_callback(f"\n  {icon} {tc['name']}\n")
+                            stream_callback(f"\n{tc['name']}\n")
                     continue
                 else:
                     # Got text response — this is the plan
@@ -388,7 +432,12 @@ class CodingAgent:
         if "__" in func_name:
             return True
         # Terminal commands and file writes need approval
-        if func_name in ("run_terminal_command", "write_file", "replace_text_in_file", "run_git_command"):
+        if func_name in (
+            "run_terminal_command",
+            "write_file",
+            "replace_text_in_file",
+            "run_git_command",
+        ):
             return True
         return False
 
