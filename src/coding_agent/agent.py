@@ -28,12 +28,15 @@ class CodingAgent:
         ]
         self.full_history = list(self.messages)
 
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
     def add_user_task(self, prompt: str):
         msg = {"role": "user", "content": prompt}
         self.messages.append(msg)
         self.full_history.append(msg)
 
-    def run_step(self, force_text=False) -> tuple[str, dict | None]:
+    def run_step(self, force_text=False, stream=True) -> tuple[str, dict | None]:
         self.messages, did_compact = smart_compact(
             self.messages, self.api_key, self.endpoint_url, self.summary_model
         )
@@ -64,7 +67,19 @@ class CodingAgent:
             self.ui_callback(f"[bold red]{error_msg}[/bold red]")
             return "error", None
 
-        message = response.json()["choices"][0]["message"]
+        data = response.json()
+        message = data["choices"][0]["message"]
+        usage = data.get("usage", {})
+
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        self.total_prompt_tokens += prompt_tokens
+        self.total_completion_tokens += completion_tokens
+
+        self.ui_callback(
+            f"[dim]Tokens: {prompt_tokens} in / {completion_tokens} out[/dim]"
+        )
+
         self.messages.append(message)
         self.full_history.append(message)
 
@@ -162,3 +177,10 @@ class CodingAgent:
             }
         ]
         self.full_history = list(self.messages)
+
+    def get_usage(self) -> dict:
+        return {
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
+        }

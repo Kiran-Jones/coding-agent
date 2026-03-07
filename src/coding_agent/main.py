@@ -10,6 +10,7 @@ from prompt_toolkit.completion import Completer, Completion
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from typing_extensions import final
 
 from .agent import SYSTEM_PROMPT, CodingAgent
 from .session_manager import SessionManager
@@ -34,6 +35,7 @@ SLASH_COMMANDS = {
     "/delete": "Delete a session",
     "/load": "Load a saved session",
     "/model": "Show, list, or switch models",
+    "/usage": "Show API token usage",
     "/verbose": "Toggle verbose/compact tool output",
     "/quit": "Exit the program",
     "/help": "Show help message",
@@ -169,6 +171,16 @@ def handle_slash_commands(
             agent.model = parts[1]
             console.print(f"[bold green]Model set to: {agent.model}[/bold green]")
 
+    elif cmd == "/usage":
+        usage = agent.get_usage()
+        console.print(
+            Panel.fit(
+                f"Tokens used: {usage['total_tokens']} (Prompt: {usage['total_prompt_tokens']}, Completion: {usage['total_completion_tokens']})",
+                title="API Usage",
+                border_style="magenta",
+            )
+        )
+
     elif cmd == "/verbose":
         global verbose_mode
         verbose_mode = not verbose_mode
@@ -191,6 +203,7 @@ def handle_slash_commands(
                 "[bold cyan]/model[/] - Show current model\n"
                 "[bold cyan]/model list[/] - List available models\n"
                 "[bold cyan]/model <name>[/] - Switch model\n"
+                "[bold cyan]/usage[/] - Show API token usage\n"
                 "[bold cyan]/verbose[/] - Toggle verbose/compact tool output\n"
                 "[bold cyan]/quit[/] - Exit the program\n"
                 "[bold cyan]/help[/] - Show this help message",
@@ -261,64 +274,69 @@ def main():
         step = 1
         max_steps = 35
 
-        while not done:
-            if step > max_steps:
-                console.print(
-                    f"\n[bold yellow]Agent reached the maximum of {max_steps} steps.[/bold yellow]"
-                )
-                keep_going = (
-                    session.prompt(
-                        "Do you want to give it 10 more steps to finish? (y/n): "
+        try:
+            while not done:
+                if step > max_steps:
+                    console.print(
+                        f"\n[bold yellow]Agent reached the maximum of {max_steps} steps.[/bold yellow]"
                     )
-                    .strip()
-                    .lower()
-                )
-
-                if keep_going == "y":
-                    max_steps += 10
-                else:
-                    # Force the agent to summarize what it did instead of just cutting off
-                    result, msg = agent.run_step(force_text=True)
-                    if result not in ("tool_used", "error"):
-                        console.print("\n[bold green]Agent Summary:[/bold green]")
-                        console.print(Panel(Markdown(result), border_style="green"))
-                    break
-
-            # On the last allowed step, force a text response so the agent wraps up
-            force_text = step == max_steps
-            result, msg = agent.run_step(force_text=force_text)
-
-            if result == "error":
-                break
-            elif result == "tool_used":
-                for tc in msg:
-                    is_error = tc["result"].startswith("Error")
-                    if verbose_mode:
-                        args_str = ", ".join(
-                            f'{k}="{v}"' for k, v in tc["args"].items()
+                    keep_going = (
+                        session.prompt(
+                            "Do you want to give it 10 more steps to finish? (y/n): "
                         )
-                        result_style = "red" if is_error else "green"
-                        result_icon = "✗" if is_error else "✓"
-                        console.print(
-                            f" [bold]┃[/bold] [bold]{tc['name']}[/bold]([dim]{args_str}[/dim])"
-                        )
-                        console.print(
-                            f" [bold]┃[/bold] [{result_style}]{result_icon} {tc['result']}[/{result_style}]"
-                        )
-                        console.print(" [bold]┃[/bold]")
+                        .strip()
+                        .lower()
+                    )
+
+                    if keep_going == "y":
+                        max_steps += 10
                     else:
-                        icon = "[red]✗[/red]" if is_error else "[green]✓[/green]"
-                        console.print(f" {icon} [bold]{tc['name']}[/bold]")
-            else:
-                console.print("\n[bold green]Agent Finished Task:[/bold green]")
-                console.print(Panel(Markdown(result), border_style="green"))
-                done = True
+                        # Force the agent to summarize what it did instead of just cutting off
+                        result, msg = agent.run_step(force_text=True)
+                        if result not in ("tool_used", "error"):
+                            console.print("\n[bold green]Agent Summary:[/bold green]")
+                            console.print(Panel(Markdown(result), border_style="green"))
+                        break
 
-            step += 1
+                # On the last allowed step, force a text response so the agent wraps up
+                force_text = step == max_steps
+                result, msg = agent.run_step(force_text=force_text)
 
-        manager.save_session(
-            current_session_id, current_session_title, agent.full_history
-        )
+                if result == "error":
+                    break
+                elif result == "tool_used":
+                    for tc in msg:
+                        is_error = tc["result"].startswith("Error")
+                        if verbose_mode:
+                            args_str = ", ".join(
+                                f'{k}="{v}"' for k, v in tc["args"].items()
+                            )
+                            result_style = "red" if is_error else "green"
+                            result_icon = "✗" if is_error else "✓"
+                            console.print(
+                                f" [bold]┃[/bold] [bold]{tc['name']}[/bold]([dim]{args_str}[/dim])"
+                            )
+                            console.print(
+                                f" [bold]┃[/bold] [{result_style}]{result_icon} {tc['result']}[/{result_style}]"
+                            )
+                            console.print(" [bold]┃[/bold]")
+                        else:
+                            icon = "[red]✗[/red]" if is_error else "[green]✓[/green]"
+                            console.print(f" {icon} [bold]{tc['name']}[/bold]")
+                else:
+                    console.print("\n[bold green]Agent Finished Task:[/bold green]")
+                    console.print(Panel(Markdown(result), border_style="green"))
+                    done = True
+
+                step += 1
+
+        except KeyboardInterrupt:
+            console.print("\n[bold yellow]Task cancelled.[/bold yellow]")
+
+        finally:
+            manager.save_session(
+                current_session_id, current_session_title, agent.full_history
+            )
 
 
 if __name__ == "__main__":
