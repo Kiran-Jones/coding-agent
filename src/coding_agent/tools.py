@@ -240,6 +240,8 @@ SEARCH_SKIP_DIRS = {
     ".tox",
     ".mypy_cache",
     ".ruff_cache",
+    ".sessions",
+    ".snapshots",
 }
 MAX_FILE_SIZE = 1_000_000  # 1 MB
 

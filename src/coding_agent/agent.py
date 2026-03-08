@@ -9,14 +9,23 @@ from .memory_utils import smart_compact
 from .snapshot_manager import SnapshotManager
 from .tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 
-SYSTEM_PROMPT = "You are a coding agent. You have tools to write files and run terminal commands. Do NOT output raw code blocks for me to run. Use your 'write_file' tool to create the python scripts, and use your 'run_terminal_command' tool to execute and test them. When you have successfully completed the task and verified it works, just reply with a friendly message explaining what you did."
+SYSTEM_PROMPT = (
+    "You are a coding agent. You have tools to search, read, write, and edit "
+    "files, run terminal and git commands, and search the web.\n\n"
+    "When given a task:\n"
+    "1. Explore first — search and read the relevant code before making changes.\n"
+    "2. Make changes using your tools. Never output raw code blocks for the "
+    "user to run manually.\n"
+    "3. Verify your work by reading the result or running tests.\n"
+    "4. Summarize what you did and what changed."
+)
 
 PLAN_SYSTEM_ADDENDUM = (
     "\n\nYou are in PLANNING MODE. Your job is to explore the codebase using "
-    "read_file, list_directory, web_search, and read_webpage, then produce a "
-    "clear step-by-step plan. Do NOT use write_file, replace_text_in_file, "
-    "run_terminal_command, or run_git_command. Only read and explore, then "
-    "present your plan."
+    "read_file, list_directory, search_files, web_search, and read_webpage, "
+    "then produce a clear step-by-step plan. Do NOT use write_file, "
+    "replace_text_in_file, run_terminal_command, or run_git_command. Only "
+    "read and explore, then present your plan."
 )
 
 READONLY_TOOLS = {
