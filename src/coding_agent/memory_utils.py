@@ -21,6 +21,10 @@ def generate_summary(
                 args = func.get("arguments", "")[:200]
                 parts.append(f"[Called {name}({args})]")
             content = " ".join(parts)
+        elif role == "tool":
+            tool_id = msg.get("tool_call_id", "")
+            result = str(msg.get("content", ""))[:300]
+            content = f"[Result for {tool_id}]: {result}"
         else:
             content = str(msg.get("content", ""))[:500]
 
@@ -66,6 +70,11 @@ def smart_compact(
 
     while recent and recent[0].get("role") not in ["user", "assistant"]:
         recent.pop(0)
+
+    # If all recent messages were tool messages, keep at least the last few
+    # to avoid losing all context
+    if not recent:
+        recent = messages[-KEEP_RECENT:]
 
     num_to_summarize = len(messages) - 1 - len(recent)
     if num_to_summarize <= 0:
