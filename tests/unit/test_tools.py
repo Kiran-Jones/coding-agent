@@ -343,6 +343,7 @@ class TestToolRegistry:
             "list_directory",
             "read_file",
             "replace_text_in_file",
+            "search_files",
             "run_git_command",
         }
 

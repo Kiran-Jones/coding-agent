@@ -1,5 +1,6 @@
 import inspect
 import os
+import pathlib
 import shlex
 import subprocess
 
@@ -230,6 +231,133 @@ def replace_text_in_file(file_path: str, old_text: str, new_text: str) -> str:
         return f"Error replacing text in file: {str(e)}"
 
 
+SEARCH_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".ruff_cache",
+}
+MAX_FILE_SIZE = 1_000_000  # 1 MB
+
+
+def search_files(
+    pattern: str, path: str = ".", include: str = "", max_results: int = 20
+) -> str:
+    """Search for files by name glob or search file contents by text. If pattern contains '*' or '?' it performs a filename glob search (e.g. '**/*.py'). Otherwise it searches file contents for the pattern as a case-insensitive substring. Use 'include' to filter by extensions (e.g. '.py,.js'). Returns matching file paths with line numbers and context."""
+
+    root = pathlib.Path(path).resolve()
+    if not root.is_dir():
+        return f"Error: Directory '{path}' not found."
+
+    is_glob = "*" in pattern or "?" in pattern
+
+    if is_glob:
+        return _glob_search(root, pattern, max_results)
+    else:
+        extensions = (
+            [e.strip() for e in include.split(",") if e.strip()] if include else []
+        )
+        return _content_search(root, pattern, extensions, max_results)
+
+
+def _should_skip(path: pathlib.Path) -> bool:
+    """Check if any path component is in the skip list."""
+    return any(part in SEARCH_SKIP_DIRS for part in path.parts)
+
+
+def _glob_search(root: pathlib.Path, pattern: str, max_results: int) -> str:
+    """Find files matching a glob pattern."""
+    matches = []
+    for match in root.glob(pattern):
+        if _should_skip(match) or not match.is_file():
+            continue
+        try:
+            rel = match.relative_to(root)
+        except ValueError:
+            rel = match
+        matches.append(str(rel))
+        if len(matches) >= max_results:
+            break
+
+    if not matches:
+        return f"No files matched the pattern '{pattern}' in {root}."
+
+    result = f"Found {len(matches)} file(s) matching '{pattern}':\n"
+    result += "\n".join(f"  {m}" for m in sorted(matches))
+    if len(matches) == max_results:
+        result += f"\n  (limited to {max_results} results)"
+    return result
+
+
+def _content_search(
+    root: pathlib.Path, pattern: str, extensions: list, max_results: int
+) -> str:
+    """Search file contents for a substring, returning matches with context."""
+    pattern_lower = pattern.lower()
+    matches = []
+    files_searched = 0
+
+    for filepath in root.rglob("*"):
+        if not filepath.is_file() or _should_skip(filepath):
+            continue
+        if extensions and filepath.suffix not in extensions:
+            continue
+        try:
+            size = filepath.stat().st_size
+        except OSError:
+            continue
+        if size > MAX_FILE_SIZE or size == 0:
+            continue
+
+        try:
+            content = filepath.read_text(errors="ignore")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        files_searched += 1
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            if pattern_lower in line.lower():
+                try:
+                    rel = filepath.relative_to(root)
+                except ValueError:
+                    rel = filepath
+
+                context_lines = []
+                start = max(0, i - 2)
+                end = min(len(lines), i + 3)
+                for j in range(start, end):
+                    marker = ">" if j == i else " "
+                    context_lines.append(f"  {marker} {j + 1:4d} | {lines[j]}")
+
+                matches.append(
+                    {
+                        "file": str(rel),
+                        "line": i + 1,
+                        "context": "\n".join(context_lines),
+                    }
+                )
+
+                if len(matches) >= max_results:
+                    break
+        if len(matches) >= max_results:
+            break
+
+    if not matches:
+        return f"No matches for '{pattern}' in {files_searched} files searched."
+
+    result = f"Found {len(matches)} match(es) for '{pattern}':\n\n"
+    for m in matches:
+        result += f"{m['file']}:{m['line']}\n{m['context']}\n\n"
+    if len(matches) == max_results:
+        result += f"(limited to {max_results} results)"
+    return result
+
+
 def run_git_command(command: str) -> str:
     """Run a git command and return its output. Useful for version control tasks."""
 
@@ -268,6 +396,7 @@ AVAILABLE_TOOLS = {
     "list_directory": list_directory,
     "read_file": read_file,
     "replace_text_in_file": replace_text_in_file,
+    "search_files": search_files,
     "run_git_command": run_git_command,
 }
 

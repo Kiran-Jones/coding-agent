@@ -19,7 +19,13 @@ PLAN_SYSTEM_ADDENDUM = (
     "present your plan."
 )
 
-READONLY_TOOLS = {"read_file", "list_directory", "web_search", "read_webpage"}
+READONLY_TOOLS = {
+    "read_file",
+    "list_directory",
+    "web_search",
+    "read_webpage",
+    "search_files",
+}
 
 
 class CodingAgent:
